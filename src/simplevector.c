@@ -87,6 +87,8 @@ JL_DLLEXPORT jl_svec_t *jl_svec_copy_resize(jl_svec_t *a, size_t n)
     jl_svec_t *c = jl_alloc_svec_uninit(n);
     for(i=0; i < nold && i < n; i++)
         jl_svecset(c, i, jl_svecref(a,i));
+    for (; i < n; i++)
+            jl_svecset(c, i, NULL);
     return c;
 }
 

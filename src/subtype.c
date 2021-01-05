@@ -2191,7 +2191,8 @@ static jl_value_t *set_var_to_const(jl_varbinding_t *bb, jl_value_t *v JL_MAYBE_
                     return jl_bottom_type;
             }
             v = jl_box_long(nv);
-        } else if (bb->lb != jl_bottom_type) {
+        }
+        else if (bb->lb != jl_bottom_type) {
             return jl_bottom_type;
         }
         bb->lb = bb->ub = v;
@@ -2482,8 +2483,10 @@ static jl_value_t *finish_unionall(jl_value_t *res JL_MAYBE_UNROOTED, jl_varbind
     if (!varval && vb->intvalued && jl_is_long(vb->lb) && vb->ub == (jl_value_t*)jl_any_type) {
         is_bound = 1;
         newvar = vb->lb;
-    } else if (!varval && (vb->lb != vb->var->lb || vb->ub != vb->var->ub))
+    }
+    else if (!varval && (vb->lb != vb->var->lb || vb->ub != vb->var->ub)) {
         newvar = (jl_value_t*)jl_new_typevar(vb->var->name, vb->lb, vb->ub);
+    }
 
     // remove/replace/rewrap free occurrences of this var in the environment
     jl_varbinding_t *btemp = e->vars;
@@ -2785,7 +2788,7 @@ static int normalize_vb_offset(jl_svec_t **params JL_REQUIRE_ROOTED_SLOT, jl_tva
             }
         }
         jl_svecset(*params, pos - vb->offset, ii);
-        ((jl_svec_t*)*params)->length -= vb->offset;
+        *params = jl_svec_copy_resize(*params, pos - vb->offset + 1);
     }
     return 1;
 }
