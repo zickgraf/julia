@@ -161,6 +161,7 @@ __attribute__((constructor)) void jl_load_libjulia_internal(void) {
     // Once we have libjulia-internal loaded, re-export its symbols:
     for (unsigned int symbol_idx=0; jl_exported_func_names[symbol_idx] != NULL; ++symbol_idx) {
         (*jl_exported_func_addrs[symbol_idx]) = lookup_symbol(libjulia_internal, jl_exported_func_names[symbol_idx]);
+        printf(" -> Setting symbol '%s' to value: %p\n", jl_exported_func_names[symbol_idx], (*jl_exported_func_addrs[symbol_idx]));
     }
 }
 
