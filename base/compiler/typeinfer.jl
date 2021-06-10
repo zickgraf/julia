@@ -296,8 +296,16 @@ function CodeInstance(result::InferenceResult, @nospecialize(inferred_result::An
         inferred_result = nothing
     else
         if isa(result_type, Const)
-            rettype_const = result_type.val
-            const_flags = 0x2
+            val = result_type.val
+            if is_interprocedural_wrapper(val)
+                # it's really rare that `Const` wraps these slot wrappers as constant
+                # so we just null out those cases to avoid confusions within `cached_result`
+                rettype_const = nothing
+                const_flags = 0x00
+            else
+                rettype_const = val
+                const_flags = 0x2
+            end
         elseif isa(result_type, PartialOpaque)
             rettype_const = result_type
             const_flags = 0x2
@@ -308,6 +316,9 @@ function CodeInstance(result::InferenceResult, @nospecialize(inferred_result::An
             rettype_const = result_type.fields
             const_flags = 0x2
         elseif isa(result_type, InterConditional)
+            rettype_const = result_type
+            const_flags = 0x2
+        elseif isa(result_type, InterMustAlias)
             rettype_const = result_type
             const_flags = 0x2
         else
@@ -554,7 +565,7 @@ end
 function visit_slot_load!(sl::SlotNumber, vtypes::VarTable, sv::InferenceState, undefs::Array{Bool,1})
     id = slot_id(sl)
     s = vtypes[id]
-    vt = widenconditional(ignorelimited(s.typ))
+    vt = widenslotwrapper(ignorelimited(s.typ))
     if s.undef
         # find used-undef variables
         undefs[id] = true
@@ -609,7 +620,7 @@ function type_annotate!(sv::InferenceState, run_optimizer::Bool)
     ssavaluetypes = src.ssavaluetypes::Vector{Any}
     for j = 1:length(ssavaluetypes)
         t = ssavaluetypes[j]
-        ssavaluetypes[j] = t === NOT_FOUND ? Union{} : widenconditional(t)
+        ssavaluetypes[j] = t === NOT_FOUND ? Union{} : widenslotwrapper(t)
     end
 
     # compute the required type for each slot
@@ -777,28 +788,12 @@ function typeinf_edge(interp::AbstractInterpreter, method::Method, @nospecialize
     code = get(code_cache(interp), mi, nothing)
     if code isa CodeInstance # return existing rettype if the code is already inferred
         if code.inferred === nothing && is_stmt_inline(get_curr_ssaflag(caller))
-            # we already inferred this edge previously and decided to discarded the inferred code
+            # we already inferred this edge previously and decided to discard the inferred code
             # but the inlinear will request to use it, we re-infer it here and keep it around in the local cache
             cache = :local
         else
             update_valid_age!(caller, WorldRange(min_world(code), max_world(code)))
-            rettype = code.rettype
-            if isdefined(code, :rettype_const)
-                rettype_const = code.rettype_const
-                # the second subtyping conditions are necessary to distinguish usual cases
-                # from rare cases when `Const` wrapped those extended lattice type objects
-                if isa(rettype_const, Vector{Any}) && !(Vector{Any} <: rettype)
-                    return PartialStruct(rettype, rettype_const), mi
-                elseif isa(rettype_const, PartialOpaque) && rettype <: Core.OpaqueClosure
-                    return rettype_const, mi
-                elseif isa(rettype_const, InterConditional) && !(InterConditional <: rettype)
-                    return rettype_const, mi
-                else
-                    return Const(rettype_const), mi
-                end
-            else
-                return rettype, mi
-            end
+            return cached_result(code), mi
         end
     else
         cache = :global # cache edge targets by default
@@ -837,6 +832,30 @@ function typeinf_edge(interp::AbstractInterpreter, method::Method, @nospecialize
     frame = frame::InferenceState
     update_valid_age!(frame, caller)
     return frame.bestguess, nothing
+end
+
+function cached_result(code::CodeInstance)
+    rettype = code.rettype
+    if isdefined(code, :rettype_const)
+        rettype_const = code.rettype_const
+        # the second subtyping conditions are necessary to distinguish usual cases
+        # from rare cases when `Const` wrapped those extended lattice type objects
+        if isa(rettype_const, Vector{Any}) && !(Vector{Any} <: rettype)
+            return PartialStruct(rettype, rettype_const)
+        elseif isa(rettype_const, PartialOpaque) && rettype <: Core.OpaqueClosure
+            return rettype_const
+        # when bootstrapping these slot wrappers may represent themselves,
+        # and subtyping is not be enough to distinguish those cases from constant cases
+        # `is_interprocedural_wrapper` checks within `CodeInstance` and `finish` take the
+        # responsibility to avoid the rare cases of `Const` wrapping these slot wrappers
+        # beforehand, and here we can just check the type
+        elseif is_interprocedural_wrapper(rettype_const)
+            return rettype_const
+        else # constant cases
+            return Const(rettype_const)
+        end
+    end
+    return rettype
 end
 
 #### entry points for inferring a MethodInstance given a type signature ####

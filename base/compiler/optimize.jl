@@ -264,6 +264,14 @@ function finish(interp::AbstractInterpreter, opt::OptimizationState, params::Opt
             if !(isa(result, Const) && !is_inlineable_constant(result.val))
                 opt.const_api = true
             end
+            local const_api = true
+            if isa(result, Const)
+                val = result.val
+                if !is_inlineable_constant(val) || is_interprocedural_wrapper(val) # see `CodeInstance`
+                    const_api = false
+                end
+            end
+            opt.const_api = const_api
             force_noinline || (src.inlineable = true)
         end
     end
