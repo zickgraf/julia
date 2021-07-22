@@ -3589,6 +3589,14 @@ static Value *emit_defer_signal(jl_codectx_t &ctx)
     return ctx.builder.CreateInBoundsGEP(T_sigatomic, ptls, ArrayRef<Value*>(offset), "jl_defer_signal");
 }
 
+static void emit_safepoint(jl_codectx_t &ctx)
+{
+    ctx.builder.CreateCall(prepare_call(gcroot_flush_func));
+    emit_signal_fence(ctx);
+    ctx.builder.CreateLoad(T_size, get_current_signal_page(ctx), true);
+    emit_signal_fence(ctx);
+}
+
 #ifndef NDEBUG
 static int compare_cgparams(const jl_cgparams_t *a, const jl_cgparams_t *b)
 {

@@ -1454,10 +1454,7 @@ static jl_cgval_t emit_ccall(jl_codectx_t &ctx, jl_value_t **args, size_t nargs)
         assert(lrt == T_void);
         assert(!isVa && !llvmcall && nccallargs == 0);
         JL_GC_POP();
-        ctx.builder.CreateCall(prepare_call(gcroot_flush_func));
-        emit_signal_fence(ctx);
-        ctx.builder.CreateLoad(T_size, get_current_signal_page(ctx), true);
-        emit_signal_fence(ctx);
+        emit_safepoint(ctx);
         return ghostValue(jl_nothing_type);
     }
     else if (is_libjulia_func("jl_get_ptls_states")) {

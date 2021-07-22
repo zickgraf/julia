@@ -7015,8 +7015,10 @@ static std::pair<std::unique_ptr<Module>, jl_llvm_functions_t>
 
     Instruction &prologue_end = ctx.builder.GetInsertBlock()->back();
 
+    // step 11a. Emit the entry safepoint
+    emit_safepoint(ctx);
 
-    // step 11. Do codegen in control flow order
+    // step 11b. Do codegen in control flow order
     std::vector<int> workstack;
     std::map<int, BasicBlock*> BB;
     std::map<size_t, BasicBlock*> come_from_bb;
