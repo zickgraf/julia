@@ -42,8 +42,12 @@
 // processor family and compiler typically supports without a lock
 // (assumed to be at least a pointer size). Since C is bad at handling 16-byte
 // types, we currently use 8 here as the default.
+#ifdef _P64
+#define MAX_ATOMIC_SIZE 16
+#else
 #define MAX_ATOMIC_SIZE 8
-#define MAX_POINTERATOMIC_SIZE 8
+#endif
+#define MAX_POINTERATOMIC_SIZE 16
 
 #ifdef _P64
 #define NWORDS(sz) (((sz)+7)>>3)
