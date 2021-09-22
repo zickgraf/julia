@@ -129,20 +129,12 @@ end
 const ns_dummy_uuid = UUID("fe0723d6-3a44-4c41-8065-ee0f42c8ceab")
 
 function dummy_uuid(project_file::String)
-    cache = LOADING_CACHE[]
-    if cache !== nothing
-        uuid = get(cache.dummy_uuid, project_file, nothing)
-        uuid === nothing || return uuid
-    end
     project_path = try
         realpath(project_file)
     catch
         project_file
     end
     uuid = uuid5(ns_dummy_uuid, project_path)
-    if cache !== nothing
-        cache.dummy_uuid[project_file] = uuid
-    end
     return uuid
 end
 
@@ -219,17 +211,6 @@ function get_updated_dict(p::TOML.Parser, f::CachedTOMLDict)
     return f.d
 end
 
-struct LoadingCache
-    load_path::Vector{String}
-    dummy_uuid::Dict{String, UUID}
-    env_project_file::Dict{String, Union{Bool, String}}
-    project_file_manifest_path::Dict{String, Union{Nothing, String}}
-    require_parsed::Set{String}
-end
-const LOADING_CACHE = Ref{Union{LoadingCache, Nothing}}(nothing)
-LoadingCache() = LoadingCache(load_path(), Dict(), Dict(), Dict(), Set())
-
-
 struct TOMLCache
     p::TOML.Parser
     d::Dict{String, CachedTOMLDict}
@@ -240,25 +221,14 @@ const TOML_LOCK = ReentrantLock()
 parsed_toml(project_file::AbstractString) = parsed_toml(project_file, TOML_CACHE, TOML_LOCK)
 function parsed_toml(project_file::AbstractString, toml_cache::TOMLCache, toml_lock::ReentrantLock)
     lock(toml_lock) do
-        cache = LOADING_CACHE[]
-        dd = if !haskey(toml_cache.d, project_file)
+        if !haskey(toml_cache.d, project_file)
             d = CachedTOMLDict(toml_cache.p, project_file)
             toml_cache.d[project_file] = d
-            d.d
+            return d.d
         else
             d = toml_cache.d[project_file]
-            # We are in a require call and have already parsed this TOML file
-            # assume that it is unchanged to avoid hitting disk
-            if cache !== nothing && project_file in cache.require_parsed
-                d.d
-            else
-                get_updated_dict(toml_cache.p, d)
-            end
+            return get_updated_dict(toml_cache.p, d)
         end
-        if cache !== nothing
-            push!(cache.require_parsed, project_file)
-        end
-        return dd
     end
 end
 
@@ -980,47 +950,42 @@ For more details regarding code loading, see the manual sections on [modules](@r
 [parallel computing](@ref code-availability).
 """
 function require(into::Module, mod::Symbol)
-    LOADING_CACHE[] = LoadingCache()
-    try
-        uuidkey = identify_package(into, String(mod))
-        # Core.println("require($(PkgId(into)), $mod) -> $uuidkey")
-        if uuidkey === nothing
-            where = PkgId(into)
-            if where.uuid === nothing
-                throw(ArgumentError("""
-                    Package $mod not found in current path:
-                    - Run `import Pkg; Pkg.add($(repr(String(mod))))` to install the $mod package.
-                    """))
-            else
-                s = """
-                Package $(where.name) does not have $mod in its dependencies:
-                - If you have $(where.name) checked out for development and have
-                  added $mod as a dependency but haven't updated your primary
-                  environment's manifest file, try `Pkg.resolve()`.
-                - Otherwise you may need to report an issue with $(where.name)"""
+    uuidkey = identify_package(into, String(mod))
+    # Core.println("require($(PkgId(into)), $mod) -> $uuidkey")
+    if uuidkey === nothing
+        where = PkgId(into)
+        if where.uuid === nothing
+            throw(ArgumentError("""
+                Package $mod not found in current path:
+                - Run `import Pkg; Pkg.add($(repr(String(mod))))` to install the $mod package.
+                """))
+        else
+            s = """
+            Package $(where.name) does not have $mod in its dependencies:
+            - If you have $(where.name) checked out for development and have
+                added $mod as a dependency but haven't updated your primary
+                environment's manifest file, try `Pkg.resolve()`.
+            - Otherwise you may need to report an issue with $(where.name)"""
 
-                uuidkey = identify_package(PkgId(string(into)), String(mod))
-                uuidkey === nothing && throw(ArgumentError(s))
+            uuidkey = identify_package(PkgId(string(into)), String(mod))
+            uuidkey === nothing && throw(ArgumentError(s))
 
-                # fall back to toplevel loading with a warning
-                if !(where in modules_warned_for)
-                    @warn string(
-                        full_warning_showed[] ? "" : s, "\n",
-                        string("Loading $(mod) into $(where.name) from project dependency, ",
-                               "future warnings for $(where.name) are suppressed.")
-                    ) _module = nothing _file = nothing _group = nothing
-                    push!(modules_warned_for, where)
-                end
-                full_warning_showed[] = true
+            # fall back to toplevel loading with a warning
+            if !(where in modules_warned_for)
+                @warn string(
+                    full_warning_showed[] ? "" : s, "\n",
+                    string("Loading $(mod) into $(where.name) from project dependency, ",
+                            "future warnings for $(where.name) are suppressed.")
+                ) _module = nothing _file = nothing _group = nothing
+                push!(modules_warned_for, where)
             end
+            full_warning_showed[] = true
         end
-        if _track_dependencies[]
-            push!(_require_dependencies, (into, binpack(uuidkey), 0.0))
-        end
-        return require(uuidkey)
-    finally
-        LOADING_CACHE[] = nothing
     end
+    if _track_dependencies[]
+        push!(_require_dependencies, (into, binpack(uuidkey), 0.0))
+    end
+    return require(uuidkey)
 end
 
 mutable struct PkgOrigin
