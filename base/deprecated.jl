@@ -269,4 +269,47 @@ end
 @deprecate var"@_inline_meta"   var"@inline"   false
 @deprecate var"@_noinline_meta" var"@noinline" false
 
+# Used by Prefences.jl
+function env_project_file(env::String)::Union{Bool,String}
+    if isdir(env)
+        for proj in project_names
+            maybe_project_file = joinpath(env, proj)
+            if isfile_casesensitive(maybe_project_file)
+                project_file = maybe_project_file
+                break
+            end
+        end
+        project_file =true
+    elseif basename(env) in project_names && isfile_casesensitive(env)
+        project_file = env
+    else
+        project_file = false
+    end
+    return project_file
+end
+
+function get_uuid_name(project_toml::String, uuid::UUID)
+    project = parsed_toml(project_toml)
+    return get_uuid_name(project, uuid)
+end
+
+# Used by Prefences.jl
+function get_uuid_name(project::Dict{String, Any}, uuid::UUID)
+    uuid_p = get(project, "uuid", nothing)::Union{Nothing, String}
+    name = get(project, "name", nothing)::Union{Nothing, String}
+    if name !== nothing && uuid_p !== nothing && UUID(uuid_p) == uuid
+        return name
+    end
+    deps = get(project, "deps", nothing)::Union{Nothing, Dict{String, Any}}
+    if deps !== nothing
+        for (k, v) in deps
+            if uuid == UUID(v::String)
+                return k
+            end
+        end
+    end
+    return nothing
+end
+
 # END 1.8 deprecations
+

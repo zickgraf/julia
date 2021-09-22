@@ -385,6 +385,7 @@ struct ExplicitEnv
                                       String,   # `path` entry
                                       Nothing,  # stdlib (no `path` nor `git-tree-sha1`)
                                       Missing}} # not present in the manifest
+    preferences::Union{Nothing, Dict{String, Any}}
 end
 
 function ExplicitEnv(envpath::String)
@@ -483,7 +484,9 @@ function ExplicitEnv(envpath::String)
         get!(lookup_strategy, uuid, missing)
     end
 
-    return ExplicitEnv(envpath, project_deps, deps_expanded, lookup_strategy)
+    preferences = get(project_d, "preferences", nothing)
+
+    return ExplicitEnv(envpath, project_deps, deps_expanded, lookup_strategy, preferences)
 end
 
 
@@ -1639,55 +1642,32 @@ function srctext_files(f::IO, srctextpos::Int64)
     return files
 end
 
-# Test to see if this UUID is mentioned in this `Project.toml`; either as
-# the top-level UUID (e.g. that of the project itself) or as a dependency.
-function get_uuid_name(project::Dict{String, Any}, uuid::UUID)
-    uuid_p = get(project, "uuid", nothing)::Union{Nothing, String}
-    name = get(project, "name", nothing)::Union{Nothing, String}
-    if name !== nothing && uuid_p !== nothing && UUID(uuid_p) == uuid
-        return name
-    end
-    deps = get(project, "deps", nothing)::Union{Nothing, Dict{String, Any}}
-    if deps !== nothing
-        for (k, v) in deps
-            if uuid == UUID(v::String)
-                return k
-            end
-        end
-    end
-    return nothing
-end
+###############
+# Preferences #
+###############
 
-function get_uuid_name(project_toml::String, uuid::UUID)
-    project = parsed_toml(project_toml)
-    return get_uuid_name(project, uuid)
-end
-
-function collect_preferences(project_toml::String, uuid::UUID)
+function collect_preferences(env::ExplicitEnv, uuid::UUID)
     # We'll return a list of dicts to be merged
     dicts = Dict{String, Any}[]
 
     # Get the name of this UUID to this project; if it can't find it, skip out.
-    project = parsed_toml(project_toml)
-    pkg_name = get_uuid_name(project, uuid)
-    if pkg_name === nothing
-        return dicts
+    pkg_name = nothing
+    for (name, uuid′) in env.project_deps
+        uuid == uuid′ && (pkg_name = name)
     end
+    pkg_name === nothing && return dicts
 
-    # Look first inside of `Project.toml` to see we have preferences embedded within there
-    proj = get(project, "preferences", nothing)
-    if proj isa Dict{String, Any}
-        push!(dicts, get(Dict{String, Any}, proj, pkg_name)::Dict{String, Any})
+    if env.preferences !== nothing
+        push!(dicts, get(Dict{String, Any}, env.preferences, pkg_name))
     end
 
     # Next, look for `(Julia)LocalPreferences.toml` files next to this `Project.toml`
-    project_dir = dirname(project_toml)
+    project_dir = dirname(env.path)
     for name in preferences_names
         toml_path = joinpath(project_dir, name)
         if isfile(toml_path)
             prefs = parsed_toml(toml_path)
             push!(dicts, get(Dict{String, Any}, prefs, pkg_name)::Dict{String,Any})
-
             # If we find `JuliaLocalPreferences.toml`, don't look for `LocalPreferences.toml`
             break
         end
@@ -1727,16 +1707,13 @@ function recursive_prefs_merge(base::Dict{String, Any}, overrides::Dict{String, 
     return new_base
 end
 
-function get_preferences(uuid::UUID)
+function get_preferences(uuid::UUID, envstack=EnvironmentStack())
     merged_prefs = Dict{String,Any}()
-    for env in reverse(load_path())
-        project_toml = env_project_file(env)
-        if !isa(project_toml, String)
-            continue
-        end
+    for env in reverse(envstack.envs)
+        env isa ExplicitEnv || continue
 
         # Collect all dictionaries from the current point in the load path, then merge them in
-        dicts = collect_preferences(project_toml, uuid)
+        dicts = collect_preferences(env, uuid)
         merged_prefs = recursive_prefs_merge(merged_prefs, dicts...)
     end
     return merged_prefs
