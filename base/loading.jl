@@ -262,70 +262,419 @@ function parsed_toml(project_file::AbstractString, toml_cache::TOMLCache, toml_l
     end
 end
 
-## package identification: determine unique identity of package to be loaded ##
+## generic project & manifest API ##
 
-# Used by Pkg but not used in loading itself
-function find_package(arg)
-    pkg = identify_package(arg)
-    pkg === nothing && return nothing
-    return locate_package(pkg)
+const project_names = ("JuliaProject.toml", "Project.toml")
+const manifest_names = ("JuliaManifest.toml", "Manifest.toml")
+const preferences_names = ("JuliaLocalPreferences.toml", "LocalPreferences.toml")
+
+function project_file_uuid(d::Dict, project_file::String)::UUID
+    uuid′ = get(d, "uuid", nothing)::Union{String, Nothing}
+    return uuid′ === nothing ? dummy_uuid(project_file) : UUID(uuid′)
 end
 
-## package identity: given a package name and a context, try to return its identity ##
-identify_package(where::Module, name::String) = identify_package(PkgId(where), name)
-
-# identify_package computes the PkgId for `name` from the context of `where`
-# or return `nothing` if no mapping exists for it
-function identify_package(where::PkgId, name::String)::Union{Nothing,PkgId}
-    where.name === name && return where
-    where.uuid === nothing && return identify_package(name) # ignore `where`
-    for env in load_path()
-        uuid = manifest_deps_get(env, where, name)
-        uuid === nothing && continue # not found--keep looking
-        uuid.uuid === nothing || return uuid # found in explicit environment--use it
-        return nothing # found in implicit environment--return "not found"
+function project_file_manifest_path(project_file::String)::Union{Nothing,String}
+    dir = dirname(project_file)
+    for mfst in manifest_names
+        manifest_file = joinpath(dir, mfst)
+        isfile_casesensitive(manifest_file) && return manifest_file
     end
     return nothing
 end
 
-# identify_package computes the PkgId for `name` from toplevel context
-# by looking through the Project.toml files and directories
-function identify_package(name::String)::Union{Nothing,PkgId}
-    for env in load_path()
-        uuid = project_deps_get(env, name)
-        uuid === nothing || return uuid # found--return it
-    end
-    return nothing
-end
-
-## package location: given a package identity, find file to load ##
-function locate_package(pkg::PkgId)::Union{Nothing,String}
-    if pkg.uuid === nothing
-        for env in load_path()
-            # look for the toplevel pkg `pkg.name` in this entry
-            found = project_deps_get(env, pkg.name)
-            found === nothing && continue
-            if pkg == found
-                # pkg.name is present in this directory or project file,
-                # return the path the entry point for the code, if it could be found
-                # otherwise, signal failure
-                return implicit_manifest_uuid_path(env, pkg)
-            end
-            @assert found.uuid !== nothing
-            return locate_package(found) # restart search now that we know the uuid for pkg
+function is_v1_format_manifest(raw_manifest::Dict)
+    if haskey(raw_manifest, "manifest_format")
+        if raw_manifest["manifest_format"] isa Dict && haskey(raw_manifest["manifest_format"], "uuid")
+            # the off-chance where an old format manifest has a dep called "manifest_format"
+            return true
         end
+        return false
     else
-        for env in load_path()
-            path = manifest_uuid_path(env, pkg)
-            path === nothing || return entry_path(path, pkg.name)
+        return true
+    end
+end
+
+# returns a deps list for both old and new manifest formats
+function get_deps(raw_manifest::Dict)
+    if is_v1_format_manifest(raw_manifest)
+        return raw_manifest
+    else
+        # if the manifest has no deps, there won't be a `deps` field
+        return get(Dict{String, Any}, raw_manifest, "deps")
+    end
+end
+
+#########################
+# Implicit environments #
+#########################
+
+struct ImplicitEnvPkg
+    path::String # The entry point of the package
+    uuid::Union{Nothing, UUID}
+    deps::Union{Nothing, Vector{PkgId}} # Eventual deps of project file of package
+end
+
+# An implicit environment (or package directory) is a folder in the LOAD_PATH without a project file.
+# A package X exists in a package directory if the directory contains one of the following "entry point" files:
+struct ImplicitEnv
+    path::String
+    pkgs::Dict{String, ImplicitEnvPkg}
+end
+
+function _ImplicitEnv(envpath::String)
+    envpath = abspath(envpath)
+    pkgs = Dict{String, ImplicitEnvPkg}()
+    warned = Set{String}()
+    for path in readdir(envpath; join=true)
+        dir, ext = splitext(path)
+        name = basename(dir)
+        pkg = nothing
+        # Package defined by a single file X.jl:
+        if ext == ".jl" && isfile_casesensitive(path)
+            pkg = ImplicitEnvPkg(path, nothing, nothing)
+        # Package defined by a folder X/src/X.jl or X.jl/src/X.jl:
+        elseif isdir(path)
+            entry_point = joinpath(path, "src", name * ".jl")
+            if isfile_casesensitive(entry_point)
+                # Does the package have a project file?
+                project_file = nothing
+                for proj in project_names
+                    maybe_project_file = joinpath(dir, proj)
+                    isfile_casesensitive(maybe_project_file) && (project_file = maybe_project_file)
+                end
+                # It did have a project file:
+                if project_file !== nothing
+                    project_d = parsed_toml(project_file)
+                    uuid = project_file_uuid(project_d, project_file)
+                    deps = PkgId[]
+                    # Get the explicit deps, these are the only deps that can be loaded inside the package:
+                    for (name, uuid) in get(Dict{String, Any}, project_d, "deps")
+                        uuid = uuid::String
+                        push!(deps, PkgId(UUID(uuid), name))
+                    end
+                    pkg = ImplicitEnvPkg(entry_point, uuid, deps)
+                # No project file: no uuid and no explicit deps:
+                else
+                    pkg = ImplicitEnvPkg(entry_point, nothing, nothing)
+                end
+            end
         end
-        # Allow loading of stdlibs if the name/uuid are given
-        # e.g. if they have been explicitly added to the project/manifest
-        path = manifest_uuid_path(Sys.STDLIB::String, pkg)
-        path === nothing || return entry_path(path, pkg.name)
+        # It is possible to both have e.g. a `X.jl` file and a `X/src/X.jl` package which is a name collison.
+        # Warn about that case if detected:
+        if pkg !== nothing
+            if haskey(pkgs, name) && !(name in warned)
+                @warn "Multiple packages with the same name $(repr(name)) in implicit environment at $(repr(envpath))"
+                push!(warned, name)
+            end
+            pkgs[name] = pkg
+        end
+    end
+    return ImplicitEnv(envpath, pkgs)
+end
+
+# The stdlib environment is an implicit environemnt.
+# It is also constant so we might as well just cache it.
+const STDLIB_ENVIRONMENT = _ImplicitEnv(Sys.STDLIB::String)
+
+function ImplicitEnv(envpath::String)
+    if envpath == Sys.STDLIB::String
+        return STDLIB_ENVIRONMENT
+    else
+        return _ImplicitEnv(envpath)
+    end
+end
+
+function _identify_package(env::ImplicitEnv, name::String)::Union{Nothing, PkgId}
+    pkg = get(env.pkgs, name, nothing)
+    pkg === nothing && return nothing
+    return PkgId(pkg.uuid, name)
+end
+
+function _locate_package(env::ImplicitEnv, pkg::PkgId)::Union{Nothing, String}
+    pkg′ = get(env.pkgs, pkg.name, nothing)
+    pkg′ === nothing && return nothing
+    # We also need to check that an eventual uuid in `pkg` matches the one in the env:
+    return pkg′.uuid !== pkg.uuid ? nothing : pkg′.path
+end
+
+
+#########################
+# Explicit environments #
+#########################
+
+# An explicit environment is a folder with a `Project.toml` file and (most often)
+# a `Manifest.toml` file. The `Project.toml` file describes what can be loaded at
+# top-level and the Manifest.toml describes what packages can be loaded in other packages
+# as well as how the path is looked up for a package
+struct ExplicitEnv
+    path::String
+    project_deps::Dict{String, UUID} # [deps] in Project.toml
+    deps::Dict{UUID, Dict{String, UUID}} # all dependencies in Manifest.toml
+    lookup_strategy::Dict{UUID, Union{
+                                      SHA1,     # `git-tree-sha1` entry
+                                      String,   # `path` entry
+                                      Nothing,  # stdlib (no `path` nor `git-tree-sha1`)
+                                      Missing}} # not present in the manifest
+end
+
+function ExplicitEnv(envpath::String)
+    envpath = abspath(envpath)
+    project_d = parsed_toml(envpath)
+
+    project_deps = Dict{String, UUID}()
+
+    # Collect all direct dependencies of the project
+    for (name, uuid) in project_d["deps"]::Dict{String, Any}
+        project_deps[name] = UUID(uuid::String)
+    end
+
+    # This project might be a package, in that case, that is also a "dependency"
+    # of the project.
+    name = get(project_d, "name", nothing)::Union{String, Nothing}
+    pkg_uuid = UUID(project_file_uuid(project_d, envpath))
+    if name !== nothing
+        project_deps[name] = pkg_uuid
+    end
+
+    manifest = project_file_manifest_path(envpath)
+    manifest_d = manifest === nothing ? Dict{String, Any}() : parsed_toml(manifest)
+
+    # Dependencies in a manifest can be stored compressed (when name is unique among all packages) 
+    # in which case it is a `Vector{String}` or expanded where it is a `name => uuid` mapping.
+    deps = Dict{UUID, Union{Vector{String}, Dict{String, UUID}}}()
+    sizehint!(deps, length(manifest_d))
+    name_to_uuid = Dict{String, UUID}()
+    sizehint!(name_to_uuid, length(manifest_d))
+    lookup_strategy = Dict{UUID, Union{SHA1, String, Nothing, Missing}}()
+    sizehint!(lookup_strategy, length(manifest_d))
+
+    for (name, pkg_infos) in get_deps(manifest_d)
+        pkg_infos = pkg_infos::Vector{Any}
+        for pkg_info in pkg_infos
+            m_uuid = UUID(pkg_info["uuid"]::String)
+            
+            # If we have multiple packages with the same name we will overwrite things here
+            # but that is fine since we will only use the information in here for packages
+            # with unique names
+            name_to_uuid[name] = m_uuid
+            deps_pkg = get(Vector{String}, pkg_info, "deps")::Union{Vector{String}, Dict{String, Any}}
+            # Compressed format with unique names:
+            if deps_pkg isa Vector{String}
+                deps[m_uuid] = deps_pkg
+            # Exapanded format:
+            else
+                deps[m_uuid] = Dict{String, UUID}(name_dep => UUID(dep_uuid::String) for (name_dep, dep_uuid) in deps_pkg)
+            end
+
+            # Determine strategy to find package
+            lookup_strat = begin
+                if (path = get(pkg_info, "path", nothing)::Union{String, Nothing}) !== nothing
+                    path
+                elseif (git_tree_sha_str = get(pkg_info, "git-tree-sha1", nothing)::Union{String, Nothing}) !== nothing
+                    SHA1(git_tree_sha_str)
+                else
+                    nothing
+                end
+            end
+            lookup_strategy[m_uuid] = lookup_strat
+        end
+    end
+
+    # No matter if the deps were stored compressed or not in the manifest,
+    # we internally store them expanded
+    deps_expanded = Dict{UUID, Dict{String, UUID}}()
+    sizehint!(deps_expanded, length(deps))
+
+    if name !== nothing
+        deps_expanded[pkg_uuid] = project_deps
+        # N.b `path` entries in the Project file is currently not understood by Pkg
+        path = get(project_d, "path", nothing)
+        entry_point = path !== nothing ? path : dirname(envpath)        
+        lookup_strategy[pkg_uuid] = entry_point
+    end
+
+    for (pkg, deps) in deps
+        # dependencies was already expanded so use it directly:
+        if deps isa Dict{String,UUID}
+            deps_expanded[pkg] = deps
+        # find the (unique) UUID associated with the name
+        else
+            deps_pkg = Dict{String, UUID}()
+            sizehint!(deps_pkg, length(deps))
+            for dep in deps
+                deps_pkg[dep] = name_to_uuid[dep]
+            end
+            deps_expanded[pkg] = deps_pkg
+        end
+    end
+
+    # Everything that does not yet have a lookup_strategy is missing from the manifest
+    for (name, uuid) in project_deps
+        get!(lookup_strategy, uuid, missing)
+    end
+
+    return ExplicitEnv(envpath, project_deps, deps_expanded, lookup_strategy)
+end
+
+
+# Marker to return when we should have been able to load a package but failed.
+# At that point, we should not keep searching for the package in other environments
+const STOP = :stop
+
+function _identify_package(env::ExplicitEnv, where::PkgId, name::String)::Union{Nothing, PkgId, Symbol}
+    where.uuid === nothing && return identify_package(env, name)
+    where.name == name && return where # Loading X inside X
+    where_pkg = get(env.deps, where.uuid, nothing)
+    where_pkg === nothing && return nothing # `where` is not in current env
+    uuid = get(where_pkg, name, nothing)
+    uuid === nothing && return STOP # we found `where` but not allowed to load `name` in it.
+    return PkgId(uuid, name)
+end
+
+function _identify_package(env::ExplicitEnv, name::String)::Union{Nothing, PkgId}
+    uuid = get(env.project_deps, name, nothing)
+    uuid === nothing && return nothing
+    return PkgId(uuid, name)
+end
+
+const STDLIBS = Set(readdir(Sys.STDLIB::String))
+
+function _locate_package(env::ExplicitEnv, pkg::PkgId)::Union{Nothing, String, Symbol}
+    pkg.uuid === nothing && return nothing
+    haskey(env.lookup_strategy, pkg.uuid) || return nothing
+    
+    lookup_strategy = env.lookup_strategy[pkg.uuid]
+
+    # Not found in manifest:
+    if lookup_strategy isa Missing
+        return STOP
+    # Stdlib:
+    elseif lookup_strategy isa Nothing
+        @assert pkg.name in STDLIBS
+        return joinpath(Sys.STDLIB::String, pkg.name, "src", pkg.name * ".jl")
+    # Path:
+    elseif lookup_strategy isa String
+        # `path` in a manifest are defined relative the project path
+        path = normpath(dirname(env.path), lookup_strategy)
+        if isdir(path)
+            path = joinpath(path, "src", pkg.name * ".jl")
+            return isfile_casesensitive(path) ? path : STOP
+        elseif isfile(path)
+            return path
+        else
+            return STOP
+        end
+    # Versioned
+    elseif lookup_strategy isa SHA1
+        hash = lookup_strategy
+        # Try find it in a depot
+        for slug in (version_slug(pkg.uuid, hash), version_slug(pkg.uuid, hash, 4))
+            for depot in DEPOT_PATH
+                path = joinpath(depot, "packages", pkg.name, slug, "src", pkg.name * ".jl")
+                isfile(path) && return path
+            end
+        end
+        return STOP 
+    else
+        error("unhandled lookup strategy")
+    end
+end
+
+
+####################
+# EnvironmentStack #
+####################
+
+# An environment stack is the stack of environments formed via load_path() (the expanded LOAD_PATH)
+struct EnvironmentStack
+    load_path::Vector{String}
+    envs::Vector{Union{ImplicitEnv, ExplicitEnv}}
+end
+
+function EnvironmentStack(environments = load_path())
+    envs = Union{ImplicitEnv, ExplicitEnv}[]
+    for env in environments
+        if isfile(env)
+            push!(envs, ExplicitEnv(env))
+        elseif isdir(env)
+            push!(envs, ImplicitEnv(env))
+        end
+    end
+    return EnvironmentStack(environments, envs)
+end
+
+identify_package(env, where::Module, name::String) = identify_package(env, PkgId(where), name)
+
+function identify_package(envstack::EnvironmentStack, where::PkgId, name::String)::Union{Nothing, PkgId, Symbol}
+    where.uuid === nothing && return identify_package(envstack, name)
+    where.name == name  && return where # X loaded in X
+    for env in envstack.envs
+        if env isa ExplicitEnv
+            pkg = _identify_package(env, where, name)
+            if pkg === STOP
+                return nothing
+            elseif pkg isa PkgId
+                return pkg
+            end
+            # keep looking
+        else
+            where_pkg = get(env.pkgs, where.name, nothing)
+            # Found a package with the correct name in the implicit environment:
+            if where_pkg !== nothing
+                # But wrong uuid, keep looking:
+                where_pkg.uuid == where.uuid || continue
+                for env in envstack.envs
+                    maybe_pkg = _identify_package(env, name)
+                    if maybe_pkg !== nothing
+                        if where_pkg.deps === nothing || maybe_pkg in where_pkg.deps
+                            return maybe_pkg
+                        end
+                    end
+                end
+                # Could not find a valid package with the correct name that could be
+                # loaded in `where`. 
+                return nothing
+            end
+        end
     end
     return nothing
 end
+
+function identify_package(envstack::EnvironmentStack, name::String)::Union{Nothing, PkgId}
+    for env in envstack.envs
+        pkg = _identify_package(env, name)
+        pkg !== nothing && return pkg
+    end
+    return nothing
+end
+
+function locate_package(envstack::EnvironmentStack, pkg::PkgId)::Union{Nothing, String}
+    for env in envstack.envs
+        path = _locate_package(env, pkg)
+        path === STOP && return nothing
+        path !== nothing && return path
+    end
+    return nothing
+end
+
+# Used by Pkg, 
+function find_package(env::EnvironmentStack, arg)
+    pkg = identify_package(env, arg)
+    pkg === nothing && return nothing
+    return locate_package(env, pkg)
+end
+
+
+identify_package(name::String) = identify_package(EnvironmentStack(), name)
+identify_package(where::Union{PkgId, Module}, name::String) = identify_package(EnvironmentStack(), where, name)
+locate_package(pkg::PkgId) = locate_package(EnvironmentStack(), pkg)
+find_package(arg) = find_package(EnvironmentStack(), arg)
+
+
+
+
+## other code loading functionality ##
+
 
 """
     pathof(m::Module)
@@ -371,343 +720,6 @@ function pkgdir(m::Module, paths::String...)
     path === nothing && return nothing
     return joinpath(dirname(dirname(path)), paths...)
 end
-
-## generic project & manifest API ##
-
-const project_names = ("JuliaProject.toml", "Project.toml")
-const manifest_names = ("JuliaManifest.toml", "Manifest.toml")
-const preferences_names = ("JuliaLocalPreferences.toml", "LocalPreferences.toml")
-
-# classify the LOAD_PATH entry to be one of:
-#  - `false`: nonexistant / nothing to see here
-#  - `true`: `env` is an implicit environment
-#  - `path`: the path of an explicit project file
-function env_project_file(env::String)::Union{Bool,String}
-    cache = LOADING_CACHE[]
-    if cache !== nothing
-        project_file = get(cache.env_project_file, env, nothing)
-        project_file === nothing || return project_file
-    end
-    if isdir(env)
-        for proj in project_names
-            maybe_project_file = joinpath(env, proj)
-            if isfile_casesensitive(maybe_project_file)
-                project_file = maybe_project_file
-                break
-            end
-        end
-        project_file =true
-    elseif basename(env) in project_names && isfile_casesensitive(env)
-        project_file = env
-    else
-        project_file = false
-    end
-    if cache !== nothing
-        cache.env_project_file[env] = project_file
-    end
-    return project_file
-end
-
-function project_deps_get(env::String, name::String)::Union{Nothing,PkgId}
-    project_file = env_project_file(env)
-    if project_file isa String
-        pkg_uuid = explicit_project_deps_get(project_file, name)
-        pkg_uuid === nothing || return PkgId(pkg_uuid, name)
-    elseif project_file
-        return implicit_project_deps_get(env, name)
-    end
-    return nothing
-end
-
-function manifest_deps_get(env::String, where::PkgId, name::String)::Union{Nothing,PkgId}
-    uuid = where.uuid
-    @assert uuid !== nothing
-    project_file = env_project_file(env)
-    if project_file isa String
-        # first check if `where` names the Project itself
-        proj = project_file_name_uuid(project_file, where.name)
-        if proj == where
-            # if `where` matches the project, use [deps] section as manifest, and stop searching
-            pkg_uuid = explicit_project_deps_get(project_file, name)
-            return PkgId(pkg_uuid, name)
-        end
-        # look for manifest file and `where` stanza
-        return explicit_manifest_deps_get(project_file, uuid, name)
-    elseif project_file
-        # if env names a directory, search it
-        return implicit_manifest_deps_get(env, where, name)
-    end
-    return nothing
-end
-
-function manifest_uuid_path(env::String, pkg::PkgId)::Union{Nothing,String}
-    project_file = env_project_file(env)
-    if project_file isa String
-        proj = project_file_name_uuid(project_file, pkg.name)
-        if proj == pkg
-            # if `pkg` matches the project, return the project itself
-            return project_file_path(project_file, pkg.name)
-        end
-        # look for manifest file and `where` stanza
-        return explicit_manifest_uuid_path(project_file, pkg)
-    elseif project_file
-        # if env names a directory, search it
-        return implicit_manifest_uuid_path(env, pkg)
-    end
-    return nothing
-end
-
-# find project file's top-level UUID entry (or nothing)
-function project_file_name_uuid(project_file::String, name::String)::PkgId
-    d = parsed_toml(project_file)
-    uuid′ = get(d, "uuid", nothing)::Union{String, Nothing}
-    uuid = uuid′ === nothing ? dummy_uuid(project_file) : UUID(uuid′)
-    name = get(d, "name", name)::String
-    return PkgId(uuid, name)
-end
-
-function project_file_path(project_file::String, name::String)
-    d = parsed_toml(project_file)
-    joinpath(dirname(project_file), get(d, "path", "")::String)
-end
-
-# find project file's corresponding manifest file
-function project_file_manifest_path(project_file::String)::Union{Nothing,String}
-    cache = LOADING_CACHE[]
-    if cache !== nothing
-        manifest_path = get(cache.project_file_manifest_path, project_file, missing)
-        manifest_path === missing || return manifest_path
-    end
-    dir = abspath(dirname(project_file))
-    d = parsed_toml(project_file)
-    explicit_manifest = get(d, "manifest", nothing)::Union{String, Nothing}
-    manifest_path = nothing
-    if explicit_manifest !== nothing
-        manifest_file = normpath(joinpath(dir, explicit_manifest))
-        if isfile_casesensitive(manifest_file)
-            manifest_path = manifest_file
-        end
-    end
-    if manifest_path === nothing
-        for mfst in manifest_names
-            manifest_file = joinpath(dir, mfst)
-            if isfile_casesensitive(manifest_file)
-                manifest_path = manifest_file
-                break
-            end
-        end
-    end
-    if cache !== nothing
-        cache.project_file_manifest_path[project_file] = manifest_path
-    end
-    return manifest_path
-end
-
-# given a directory (implicit env from LOAD_PATH) and a name,
-# check if it is an implicit package
-function entry_point_and_project_file_inside(dir::String, name::String)::Union{Tuple{Nothing,Nothing},Tuple{String,Nothing},Tuple{String,String}}
-    path = normpath(joinpath(dir, "src", "$name.jl"))
-    isfile_casesensitive(path) || return nothing, nothing
-    for proj in project_names
-        project_file = normpath(joinpath(dir, proj))
-        isfile_casesensitive(project_file) || continue
-        return path, project_file
-    end
-    return path, nothing
-end
-
-# given a project directory (implicit env from LOAD_PATH) and a name,
-# find an entry point for `name`, and see if it has an associated project file
-function entry_point_and_project_file(dir::String, name::String)::Union{Tuple{Nothing,Nothing},Tuple{String,Nothing},Tuple{String,String}}
-    path = normpath(joinpath(dir, "$name.jl"))
-    isfile_casesensitive(path) && return path, nothing
-    dir = joinpath(dir, name)
-    path, project_file = entry_point_and_project_file_inside(dir, name)
-    path === nothing || return path, project_file
-    dir = dir * ".jl"
-    path, project_file = entry_point_and_project_file_inside(dir, name)
-    path === nothing || return path, project_file
-    return nothing, nothing
-end
-
-# given a path and a name, return the entry point
-function entry_path(path::String, name::String)::Union{Nothing,String}
-    isfile_casesensitive(path) && return normpath(path)
-    path = normpath(joinpath(path, "src", "$name.jl"))
-    isfile_casesensitive(path) && return path
-    return nothing # source not found
-end
-
-## explicit project & manifest API ##
-
-# find project file root or deps `name => uuid` mapping
-# return `nothing` if `name` is not found
-function explicit_project_deps_get(project_file::String, name::String)::Union{Nothing,UUID}
-    d = parsed_toml(project_file)
-    root_uuid = dummy_uuid(project_file)
-    if get(d, "name", nothing)::Union{String, Nothing} === name
-        uuid = get(d, "uuid", nothing)::Union{String, Nothing}
-        return uuid === nothing ? root_uuid : UUID(uuid)
-    end
-    deps = get(d, "deps", nothing)::Union{Dict{String, Any}, Nothing}
-    if deps !== nothing
-        uuid = get(deps, name, nothing)::Union{String, Nothing}
-        uuid === nothing || return UUID(uuid)
-    end
-    return nothing
-end
-
-function is_v1_format_manifest(raw_manifest::Dict)
-    if haskey(raw_manifest, "manifest_format")
-        if raw_manifest["manifest_format"] isa Dict && haskey(raw_manifest["manifest_format"], "uuid")
-            # the off-chance where an old format manifest has a dep called "manifest_format"
-            return true
-        end
-        return false
-    else
-        return true
-    end
-end
-
-# returns a deps list for both old and new manifest formats
-function get_deps(raw_manifest::Dict)
-    if is_v1_format_manifest(raw_manifest)
-        return raw_manifest
-    else
-        # if the manifest has no deps, there won't be a `deps` field
-        return get(Dict{String, Any}, raw_manifest, "deps")
-    end
-end
-
-# find `where` stanza and return the PkgId for `name`
-# return `nothing` if it did not find `where` (indicating caller should continue searching)
-function explicit_manifest_deps_get(project_file::String, where::UUID, name::String)::Union{Nothing,PkgId}
-    manifest_file = project_file_manifest_path(project_file)
-    manifest_file === nothing && return nothing # manifest not found--keep searching LOAD_PATH
-    d = get_deps(parsed_toml(manifest_file))
-    found_where = false
-    found_name = false
-    for (dep_name, entries) in d
-        entries::Vector{Any}
-        for entry in entries
-            entry = entry::Dict{String, Any}
-            uuid = get(entry, "uuid", nothing)::Union{String, Nothing}
-            uuid === nothing && continue
-            if UUID(uuid) === where
-                found_where = true
-                # deps is either a list of names (deps = ["DepA", "DepB"]) or
-                # a table of entries (deps = {"DepA" = "6ea...", "DepB" = "55d..."}
-                deps = get(entry, "deps", nothing)::Union{Vector{String}, Dict{String, Any}, Nothing}
-                deps === nothing && continue
-                if deps isa Vector{String}
-                    found_name = name in deps
-                    break
-                else
-                    deps = deps::Dict{String, Any}
-                    for (dep, uuid) in deps
-                        uuid::String
-                        if dep === name
-                            return PkgId(UUID(uuid), name)
-                        end
-                    end
-                end
-            end
-        end
-    end
-    found_where || return nothing
-    found_name || return PkgId(name)
-    # Only reach here if deps was not a dict which mean we have a unique name for the dep
-    name_deps = get(d, name, nothing)::Union{Nothing, Vector{Any}}
-    if name_deps === nothing || length(name_deps) != 1
-        error("expected a single entry for $(repr(name)) in $(repr(project_file))")
-    end
-    entry = first(name_deps::Vector{Any})::Dict{String, Any}
-    uuid = get(entry, "uuid", nothing)::Union{String, Nothing}
-    uuid === nothing && return nothing
-    return PkgId(UUID(uuid), name)
-end
-
-# find `uuid` stanza, return the corresponding path
-function explicit_manifest_uuid_path(project_file::String, pkg::PkgId)::Union{Nothing,String}
-    manifest_file = project_file_manifest_path(project_file)
-    manifest_file === nothing && return nothing # no manifest, skip env
-
-    d = get_deps(parsed_toml(manifest_file))
-    entries = get(d, pkg.name, nothing)::Union{Nothing, Vector{Any}}
-    entries === nothing && return nothing # TODO: allow name to mismatch?
-    for entry in entries
-        entry = entry::Dict{String, Any}
-        uuid = get(entry, "uuid", nothing)::Union{Nothing, String}
-        uuid === nothing && continue
-        if UUID(uuid) === pkg.uuid
-            return explicit_manifest_entry_path(manifest_file, pkg, entry)
-        end
-    end
-    return nothing
-end
-
-function explicit_manifest_entry_path(manifest_file::String, pkg::PkgId, entry::Dict{String,Any})
-    path = get(entry, "path", nothing)::Union{Nothing, String}
-    if path !== nothing
-        path = normpath(abspath(dirname(manifest_file), path))
-        return path
-    end
-    hash = get(entry, "git-tree-sha1", nothing)::Union{Nothing, String}
-    hash === nothing && return nothing
-    hash = SHA1(hash)
-    # Keep the 4 since it used to be the default
-    uuid = pkg.uuid::UUID # checked within `explicit_manifest_uuid_path`
-    for slug in (version_slug(uuid, hash), version_slug(uuid, hash, 4))
-        for depot in DEPOT_PATH
-            path = joinpath(depot, "packages", pkg.name, slug)
-            ispath(path) && return abspath(path)
-        end
-    end
-    return nothing
-end
-
-## implicit project & manifest API ##
-
-# look for an entry point for `name` from a top-level package (no environment)
-# otherwise return `nothing` to indicate the caller should keep searching
-function implicit_project_deps_get(dir::String, name::String)::Union{Nothing,PkgId}
-    path, project_file = entry_point_and_project_file(dir, name)
-    if project_file === nothing
-        path === nothing && return nothing
-        return PkgId(name)
-    end
-    proj = project_file_name_uuid(project_file, name)
-    proj.name == name || return nothing
-    return proj
-end
-
-# look for an entry-point for `name`, check that UUID matches
-# if there's a project file, look up `name` in its deps and return that
-# otherwise return `nothing` to indicate the caller should keep searching
-function implicit_manifest_deps_get(dir::String, where::PkgId, name::String)::Union{Nothing,PkgId}
-    @assert where.uuid !== nothing
-    project_file = entry_point_and_project_file(dir, where.name)[2]
-    project_file === nothing && return nothing # a project file is mandatory for a package with a uuid
-    proj = project_file_name_uuid(project_file, where.name, )
-    proj == where || return nothing # verify that this is the correct project file
-    # this is the correct project, so stop searching here
-    pkg_uuid = explicit_project_deps_get(project_file, name)
-    return PkgId(pkg_uuid, name)
-end
-
-# look for an entry-point for `pkg` and return its path if UUID matches
-function implicit_manifest_uuid_path(dir::String, pkg::PkgId)::Union{Nothing,String}
-    path, project_file = entry_point_and_project_file(dir, pkg.name)
-    if project_file === nothing
-        pkg.uuid === nothing || return nothing
-        return path
-    end
-    proj = project_file_name_uuid(project_file, pkg.name)
-    proj == pkg || return nothing
-    return path
-end
-
-## other code loading functionality ##
 
 function find_source_file(path::AbstractString)
     (isabspath(path) || isfile(path)) && return path

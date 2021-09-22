@@ -380,15 +380,16 @@ include("initdefs.jl")
 # worker threads
 include("threadcall.jl")
 
-# code loading
 include("uuid.jl")
-include("pkgid.jl")
-include("toml_parser.jl")
-include("loading.jl")
 
 # misc useful functions & macros
 include("timing.jl")
 include("util.jl")
+
+# code loading
+include("pkgid.jl")
+include("toml_parser.jl")
+include("loading.jl")
 
 include("asyncmap.jl")
 
