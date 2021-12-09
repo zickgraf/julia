@@ -1657,3 +1657,7 @@ function lyap(A::StridedMatrix{T}, C::StridedMatrix{T}) where {T<:BlasFloat}
 end
 lyap(A::StridedMatrix{T}, C::StridedMatrix{T}) where {T<:Integer} = lyap(float(A), float(C))
 lyap(a::Union{Real,Complex}, c::Union{Real,Complex}) = -c/(2real(a))
+function lyap(A::AbstractMatrix, C::AbstractMatrix)
+    T = promote_type(float(eltype(A)), float(eltype(C)))
+    return lyap(convert(Matrix{T}, A), convert(Matrix{T}, C))
+end

@@ -132,6 +132,8 @@ bimg  = randn(n,2)/2
         @testset "Lyapunov/Sylvester" begin
             x = lyap(a, a2)
             @test -a2 ≈ a*x + x*a'
+            y = lyap(a', a2')
+            @test -a2' ≈ a'y + y*a
             x2 = sylvester(a[1:3, 1:3], a[4:n, 4:n], a2[1:3,4:n])
             @test -a2[1:3, 4:n] ≈ a[1:3, 1:3]*x2 + x2*a[4:n, 4:n]
         end
