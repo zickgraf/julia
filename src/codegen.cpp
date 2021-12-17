@@ -8092,11 +8092,14 @@ extern "C" void jl_init_llvm(void)
     }
     // Allocate a target...
     Optional<CodeModel::Model> codemodel =
-#ifdef _P64
+#if defined(_OS_DARWIN_) && defined(_CPU_AARCH64_)
+        // Let LLVM pick its default code model on aarch64 darwin
+        None;
+#elif defined(_P64)
         // Make sure we are using the large code model on 64bit
-        // Let LLVM pick a default suitable for jitting on 32bit
         CodeModel::Large;
 #else
+        // Let LLVM pick a default suitable for jitting on 32bit
         None;
 #endif
     auto optlevel = CodeGenOptLevelFor(jl_options.opt_level);

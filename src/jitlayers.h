@@ -169,7 +169,11 @@ class JuliaOJIT {
 #endif
 
 public:
+#if defined(_OS_DARWIN_)
     typedef orc::RTDyldObjectLinkingLayer ObjLayerT;
+#else
+    typedef orc::ObjectLinkingLayer ObjLayerT;
+#endif
     typedef orc::IRCompileLayer CompileLayerT;
 #if JL_LLVM_VERSION < 120000
     typedef RTDyldObjHandleT ModuleHandleT;
