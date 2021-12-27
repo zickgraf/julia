@@ -637,6 +637,36 @@ CompilerResultT JuliaOJIT::CompilerT::operator()(Module &M)
     return CompilerResultT(std::move(ObjBuffer));
 }
 
+class ObjectRegistrationPlugin : public orc::ObjectLinkingLayer::Plugin {
+public:
+    ObjectRegistrationPlugin(JuliaOJIT * jjit) : JJ(jjit) {}
+    ObjectRegistrationPlugin(const ObjectRegistrationPlugin * other) : JJ(other->JJ) {}
+    void modifyPassConfig(orc::MaterializationResponsibility &MR, const Triple &TT,
+                          jitlink::PassConfiguration &Config) override {}
+
+    void notifyLoaded(orc::MaterializationResponsibility &MR) override {
+        dbgs() << "Loading object\n";
+    }
+
+    Error notifyEmitted(orc::MaterializationResponsibility &MR) override {
+        dbgs() << "Emitted object\n";
+        return Error::success();
+    }
+
+    Error notifyFailed(orc::MaterializationResponsibility &MR) override {
+        return Error::success();
+    }
+
+    Error notifyRemovingResources(orc::ResourceKey K) override {
+        return Error::success();
+    }
+
+    void notifyTransferringResources(orc::ResourceKey DstKey,
+                                    orc::ResourceKey SrcKey) override {}
+private:
+    JuliaOJIT * JJ;
+};
+
 JuliaOJIT::JuliaOJIT(TargetMachine &TM, LLVMContext *LLVMCtx)
   : TM(TM),
     DL(TM.createDataLayout()),
@@ -651,6 +681,7 @@ JuliaOJIT::JuliaOJIT(TargetMachine &TM, LLVMContext *LLVMCtx)
 #endif
     GlobalJD(ES.createBareJITDylib("JuliaGlobals")),
     JD(ES.createBareJITDylib("JuliaOJIT")),
+#if !defined(_OS_DARWIN_)
     ObjectLayer(
             ES,
             [this]() {
@@ -658,15 +689,25 @@ JuliaOJIT::JuliaOJIT(TargetMachine &TM, LLVMContext *LLVMCtx)
                 return result;
             }
         ),
+#else
+    ObjectLayer(
+            ES,
+            std::make_unique<jitlink::InProcessMemoryManager>()
+        ),
+#endif
     CompileLayer(ES, ObjectLayer, std::make_unique<CompilerT>(this))
 {
 #if JL_LLVM_VERSION >= 120000
+#if !defined(_OS_DARWIN_)
     ObjectLayer.setNotifyLoaded(
         [this](orc::MaterializationResponsibility &MR,
                const object::ObjectFile &Object,
                const RuntimeDyld::LoadedObjectInfo &LOS) {
             registerObject(Object, &LOS);
         });
+#else
+    ObjectLayer.addPlugin(std::make_unique<ObjectRegistrationPlugin>(new ObjectRegistrationPlugin(this)));
+#endif
 #else
     ObjectLayer.setNotifyLoaded(
         [this](RTDyldObjHandleT H,
@@ -847,12 +888,13 @@ StringRef JuliaOJIT::getFunctionAtAddress(uint64_t Addr, jl_code_instance_t *cod
 
 void JuliaOJIT::RegisterJITEventListener(JITEventListener *L)
 {
+    return;
     if (!L)
         return;
 #if JL_LLVM_VERSION >= 120000
-    this->ObjectLayer.registerJITEventListener(*L);
+    //this->ObjectLayer.registerJITEventListener(*L);
 #else
-    EventListeners.push_back(L);
+    //EventListeners.push_back(L);
 #endif
 }
 

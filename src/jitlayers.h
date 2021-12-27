@@ -9,6 +9,7 @@
 #include <llvm/ExecutionEngine/SectionMemoryManager.h>
 #include <llvm/ExecutionEngine/Orc/IRCompileLayer.h>
 #include <llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h>
+#include <llvm/ExecutionEngine/Orc/ObjectLinkingLayer.h>
 #include <llvm/ExecutionEngine/JITEventListener.h>
 
 #include <llvm/Target/TargetMachine.h>
@@ -169,7 +170,7 @@ class JuliaOJIT {
 #endif
 
 public:
-#if defined(_OS_DARWIN_)
+#if !defined(_OS_DARWIN_)
     typedef orc::RTDyldObjectLinkingLayer ObjLayerT;
 #else
     typedef orc::ObjectLinkingLayer ObjLayerT;
