@@ -450,6 +450,18 @@ _evview(S::SymTridiagonal) = @view S.ev[begin:length(S.dv) - 1]
 _zeros(::Type{T}, b::AbstractVector, n::Integer) where {T} = zeros(T, max(length(b), n))
 _zeros(::Type{T}, B::AbstractMatrix, n::Integer) where {T} = zeros(T, max(size(B, 1), n), size(B, 2))
 
+# initialize output arrays, handle the case array-of-arrays case
+_init(op, A::AbstractArray{<:Number}, B::AbstractArray{<:Number}, C) =
+    (_ -> zero(typeof(op(oneunit(eltype(A)), oneunit(eltype(B)))))).(C)
+_init(op, A::AbstractArray{<:AbstractArray}, B::AbstractArray{<:AbstractArray}, C) =
+    Base.promote_op(op, eltype(A), eltype(B)).(C)
+# old fallback, no promotion
+_init(op, A::AbstractArray, B::AbstractArray, C) = copy(C)
+_denseinit(op, A::AbstractArray{<:Number}, B::AbstractArray{<:Number}, C) =
+    _init(op, A, B, CartesianIndices(C))
+_denseinit(op, A::AbstractArray, B::AbstractArray, C) =
+    _init(op, A, B, C)
+
 # General fallback definition for handling under- and overdetermined system as well as square problems
 # While this definition is pretty general, it does e.g. promote to common element type of lhs and rhs
 # which is required by LAPACK but not SuiteSpase which allows real-complex solves in some cases. Hence,
