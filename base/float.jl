@@ -483,7 +483,7 @@ for op in (:(==), :<, :<=)
 end
 
 
-abs(x::IEEEFoat) = abs_float(x)
+abs(x::IEEEFloat) = abs_float(x)
 
 """
     isnan(f) -> Bool
