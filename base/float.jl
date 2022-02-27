@@ -388,7 +388,7 @@ muladd(x::T, y::T, z::T) where {T<:IEEEFloat} = muladd_float(x, y, z)
 rem(x::T, y::T) where {T<:IEEEFloat} = rem_float(x, y)
 
 # Workaround for win32 as discussed #42299
-if Sys.iswindows() && Int === Int32
+if Int === Int32
     rem(x::Float32, y::Float32) = Float32(rem(Float64(x), Float64(y)))
     rem(x::Float16, y::Float16) = Float16(rem(Float64(x), Float64(y)))
 end
