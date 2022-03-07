@@ -807,7 +807,7 @@ function show_ir(io::IO, code::IRCode, config::IRShowConfig=default_config(code)
     used = stmts_used(io, code)
     cfg = code.cfg
     bb_idx = 1
-    show_ir_helper(io::IO, 1:length(code.stmts), code, config, used, cfg, 1, pop_new_node!)
+    show_ir_helper(io, 1:length(code.stmts), code, config, used, cfg, 1, pop_new_node!)
 
     max_bb_idx_size = length(string(length(cfg.blocks)))
     config.line_info_preprinter(io, " "^(max_bb_idx_size + 2), 0)
@@ -819,7 +819,7 @@ function show_ir(io::IO, code::CodeInfo, config::IRShowConfig=default_config(cod
     used = stmts_used(io, code)
     cfg = compute_basic_blocks(code.code)
     bb_idx = 1
-    show_ir_helper(io::IO, 1:length(code.code), code, config, used, cfg, 1)
+    show_ir_helper(io, 1:length(code.code), code, config, used, cfg, 1)
 
     max_bb_idx_size = length(string(length(cfg.blocks)))
     config.line_info_preprinter(io, " "^(max_bb_idx_size + 2), 0)
@@ -835,7 +835,7 @@ function show_ir(io::IO, compact::IncrementalCompact, config::IRShowConfig=defau
 
     # First print everything that has already been compacted
     pop_new_node! = ircode_new_nodes_iter(compact)
-    bb_idx = show_ir_helper(io::IO, 1:compact.result_idx-1, compact, config, used, cfg, 1, pop_new_node!)
+    bb_idx = show_ir_helper(io, 1:compact.result_idx-1, compact, config, used, cfg, 1, pop_new_node!)
 
     # Print unompacted nodes from the original ir
     stmts = compact.ir.stmts
@@ -843,7 +843,7 @@ function show_ir(io::IO, compact::IncrementalCompact, config::IRShowConfig=defau
     if compact.idx < length(stmts)
         printstyled("─"^width, color=:red)
     end
-    show_ir_helper(io::IO, compact.idx:length(stmts), compact, config, used, cfg, bb_idx, pop_new_node!)
+    show_ir_helper(io, compact.idx:length(stmts), compact, config, used, cfg, bb_idx, pop_new_node!)
 
     max_bb_idx_size = length(string(length(cfg.blocks)))
     config.line_info_preprinter(io, " "^(max_bb_idx_size + 2), 0)
