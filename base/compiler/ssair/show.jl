@@ -790,20 +790,36 @@ function default_config(code::IRCode; verbose_linetable=false)
 end
 default_config(code::CodeInfo) = IRShowConfig(statementidx_lineinfo_printer(code))
 
-function show_ir(io::IO, code::Union{IRCode, CodeInfo}, config::IRShowConfig=default_config(code);
-                 pop_new_node! = code isa IRCode ? ircode_new_nodes_iter(code) : Returns(nothing))
-    stmts = code isa IRCode ? code.stmts : code.code
-    used = stmts_used(io, code)
-    cfg = code isa IRCode ? code.cfg : compute_basic_blocks(stmts)
-    bb_idx = 1
-
-    for idx in 1:length(stmts)
+function show_ir_helper(io::IO, inds, code::Union{IRCode, CodeInfo, IncrementalCompact}, config::IRShowConfig,
+                        used, cfg, bb_idx, pop_new_node!)
+    for idx in inds
         if config.should_print_stmt(code, idx, used)
             bb_idx = show_ir_stmt(io, code, idx, config, used, cfg, bb_idx; pop_new_node!)
         elseif bb_idx <= length(cfg.blocks) && idx == cfg.blocks[bb_idx].stmts.stop
             bb_idx += 1
         end
     end
+    return bb_idx
+end
+
+function show_ir(io::IO, code::IRCode, config::IRShowConfig=default_config(code);
+                 pop_new_node! = ircode_new_nodes_iter(code))
+    used = stmts_used(io, code.stmts)
+    cfg = code.cfg
+    bb_idx = 1
+    show_ir_helper(io::IO, 1:length(code.stmts), code, config, used, cfg, 1, pop_new_node!)
+
+    max_bb_idx_size = length(string(length(cfg.blocks)))
+    config.line_info_preprinter(io, " "^(max_bb_idx_size + 2), 0)
+    nothing
+end
+
+function show_ir(io::IO, code::CodeInfo, config::IRShowConfig=default_config(code);
+                 pop_new_node! = Returns(nothing))
+    used = stmts_used(io, code)
+    cfg = compute_basic_blocks(code.code)
+    bb_idx = 1
+    show_ir_helper(io::IO, 1:length(code.code), code, config, used, cfg, 1)
 
     max_bb_idx_size = length(string(length(cfg.blocks)))
     config.line_info_preprinter(io, " "^(max_bb_idx_size + 2), 0)
@@ -816,32 +832,17 @@ function show_ir(io::IO, compact::IncrementalCompact, config::IRShowConfig=defau
     (height, width) = displaysize(io)
 
     used = BitSet(i for (i, x) in pairs(compact.used_ssas) if x != 0)
-    bb_idx = 1
 
     # First print everything that has already been compacted
-    stmts = compact.result
     pop_new_node! = ircode_new_nodes_iter(compact)
-    for idx in 1:compact.result_idx-1
-        if config.should_print_stmt(compact, idx, used)
-            bb_idx = show_ir_stmt(io, compact, idx, config, used, cfg, bb_idx; pop_new_node!)
-        elseif bb_idx <= length(cfg.blocks) && idx == cfg.blocks[bb_idx].stmts.stop
-            bb_idx += 1
-        end
-    end
+    bb_idx = show_ir_helper(io::IO, 1:compact.result_idx-1, compact, config, used, cfg, 1, pop_new_node!)
 
     # Print unompacted nodes from the original ir
-    stmts = compact.ir.stmts
     pop_new_node! = ircode_new_nodes_iter(compact.ir)
-    if compact.idx < length(stmts)
+    if compact.idx < length(compact.ir.stmts)
         printstyled("─"^width, color=:red)
     end
-    for idx in compact.idx:length(stmts)
-        if config.should_print_stmt(compact, idx, used)
-            bb_idx = show_ir_stmt(io, compact, idx, config, used, cfg, bb_idx; pop_new_node!)
-        elseif bb_idx <= length(cfg.blocks) && idx == cfg.blocks[bb_idx].stmts.stop
-            bb_idx += 1
-        end
-    end
+    show_ir_helper(io::IO, compact.idx:length(stmts), compact, config, used, cfg, bb_idx, pop_new_node!)
 
     max_bb_idx_size = length(string(length(cfg.blocks)))
     config.line_info_preprinter(io, " "^(max_bb_idx_size + 2), 0)
