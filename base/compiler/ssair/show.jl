@@ -804,7 +804,7 @@ end
 
 function show_ir(io::IO, code::IRCode, config::IRShowConfig=default_config(code);
                  pop_new_node! = ircode_new_nodes_iter(code))
-    used = stmts_used(io, code.stmts)
+    used = stmts_used(io, code)
     cfg = code.cfg
     bb_idx = 1
     show_ir_helper(io::IO, 1:length(code.stmts), code, config, used, cfg, 1, pop_new_node!)
@@ -838,8 +838,9 @@ function show_ir(io::IO, compact::IncrementalCompact, config::IRShowConfig=defau
     bb_idx = show_ir_helper(io::IO, 1:compact.result_idx-1, compact, config, used, cfg, 1, pop_new_node!)
 
     # Print unompacted nodes from the original ir
+    stmts = compact.ir.stmts
     pop_new_node! = ircode_new_nodes_iter(compact.ir)
-    if compact.idx < length(compact.ir.stmts)
+    if compact.idx < length(stmts)
         printstyled("─"^width, color=:red)
     end
     show_ir_helper(io::IO, compact.idx:length(stmts), compact, config, used, cfg, bb_idx, pop_new_node!)
