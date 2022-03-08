@@ -837,7 +837,9 @@ function show_ir(io::IO, compact::IncrementalCompact, config::IRShowConfig=defau
     stmts = compact.ir.stmts
     pop_new_node! = ircode_new_nodes_iter(compact.ir)
     if compact.idx < length(stmts)
-        printstyled("─"^width, color=:red)
+        indent = length(string(length(stmts)))
+        config.line_info_preprinter(io, "", compact.idx)
+        printstyled("─"^(width - indent - 1), '\n', color=:red)
     end
     show_ir_helper(io, compact.idx:length(stmts), compact, config, used, cfg, bb_idx, pop_new_node!)
     finish_show_ir(io, cfg, config)
