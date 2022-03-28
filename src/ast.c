@@ -52,6 +52,9 @@ JL_DLLEXPORT jl_sym_t *jl_new_sym;
 JL_DLLEXPORT jl_sym_t *jl_using_sym;
 JL_DLLEXPORT jl_sym_t *jl_splatnew_sym;
 JL_DLLEXPORT jl_sym_t *jl_block_sym;
+JL_DLLEXPORT jl_sym_t *jl_if_sym;
+JL_DLLEXPORT jl_sym_t *jl_for_sym;
+JL_DLLEXPORT jl_sym_t *jl_while_sym;
 JL_DLLEXPORT jl_sym_t *jl_new_opaque_closure_sym;
 JL_DLLEXPORT jl_sym_t *jl_opaque_closure_method_sym;
 JL_DLLEXPORT jl_sym_t *jl_const_sym;
@@ -86,6 +89,10 @@ JL_DLLEXPORT jl_sym_t *jl_purity_sym;
 JL_DLLEXPORT jl_sym_t *jl_nospecialize_sym;
 JL_DLLEXPORT jl_sym_t *jl_macrocall_sym;
 JL_DLLEXPORT jl_sym_t *jl_colon_sym;
+JL_DLLEXPORT jl_sym_t *jl_kw_sym;
+JL_DLLEXPORT jl_sym_t *jl_parameters_sym;
+JL_DLLEXPORT jl_sym_t *jl_splat_sym;
+JL_DLLEXPORT jl_sym_t *jl_function_sym;
 JL_DLLEXPORT jl_sym_t *jl_hygienicscope_sym;
 JL_DLLEXPORT jl_sym_t *jl_throw_undef_if_not_sym;
 JL_DLLEXPORT jl_sym_t *jl_getfield_undefref_sym;
@@ -323,6 +330,10 @@ void jl_init_common_symbols(void)
     jl_dot_sym = jl_symbol(".");
     jl_as_sym = jl_symbol("as");
     jl_colon_sym = jl_symbol(":");
+    jl_kw_sym = jl_symbol("kw");
+    jl_parameters_sym = jl_symbol("parameters");
+    jl_splat_sym = jl_symbol("...");
+    jl_function_sym = jl_symbol("function");
     jl_boundscheck_sym = jl_symbol("boundscheck");
     jl_inbounds_sym = jl_symbol("inbounds");
     jl_newvar_sym = jl_symbol("newvar");
@@ -364,6 +375,9 @@ void jl_init_common_symbols(void)
     jl_popaliasscope_sym = jl_symbol("popaliasscope");
     jl_thismodule_sym = jl_symbol("thismodule");
     jl_block_sym = jl_symbol("block");
+    jl_if_sym = jl_symbol("if");
+    jl_for_sym = jl_symbol("for");
+    jl_while_sym = jl_symbol("while");
     jl_atom_sym = jl_symbol("atom");
     jl_statement_sym = jl_symbol("statement");
     jl_all_sym = jl_symbol("all");
@@ -992,7 +1006,7 @@ int jl_has_meta(jl_array_t *body, jl_sym_t *sym) JL_NOTSAFEPOINT
     return 0;
 }
 
-static jl_value_t *jl_invoke_julia_macro(jl_array_t *args, jl_module_t *inmodule, jl_module_t **ctx, size_t world, int throw_load_error)
+static jl_expr_t *jl_invoke_julia_macro(jl_array_t *args, jl_module_t *inmodule, jl_module_t **ctx, size_t world, int throw_load_error)
 {
     jl_task_t *ct = jl_current_task;
     JL_TIMING(MACRO_INVOCATION);
@@ -1004,10 +1018,9 @@ static jl_value_t *jl_invoke_julia_macro(jl_array_t *args, jl_module_t *inmodule
     margs[0] = jl_array_ptr_ref(args, 0);
     // __source__ argument
     jl_value_t *lno = jl_array_ptr_ref(args, 1);
+    if (!jl_typeis(lno, jl_linenumbernode_type))
+        lno = jl_new_struct(jl_linenumbernode_type, jl_box_long(0), jl_nothing);
     margs[1] = lno;
-    if (!jl_typeis(lno, jl_linenumbernode_type)) {
-        margs[1] = jl_new_struct(jl_linenumbernode_type, jl_box_long(0), jl_nothing);
-    }
     margs[2] = (jl_value_t*)inmodule;
     for (i = 3; i < nargs; i++)
         margs[i] = jl_array_ptr_ref(args, i - 1);
@@ -1033,7 +1046,6 @@ static jl_value_t *jl_invoke_julia_macro(jl_array_t *args, jl_module_t *inmodule
             jl_rethrow();
         }
         else {
-            jl_value_t *lno = margs[1];
             jl_value_t *file = jl_fieldref(lno, 1);
             if (jl_is_symbol(file))
                 margs[0] = jl_cstr_to_string(jl_symbol_name((jl_sym_t*)file));
@@ -1044,9 +1056,13 @@ static jl_value_t *jl_invoke_julia_macro(jl_array_t *args, jl_module_t *inmodule
                                            jl_current_exception()));
         }
     }
+    margs[0] = result;
+    jl_expr_t *wrap = jl_exprn(jl_block_sym, 2);
+    jl_exprargset(wrap, 0, lno);
+    jl_exprargset(wrap, 1, result);
     ct->world_age = last_age;
     JL_GC_POP();
-    return result;
+    return wrap;
 }
 
 static jl_value_t *jl_expand_macros(jl_value_t *expr, jl_module_t *inmodule, struct macroctx_stack *macroctx, int onelevel, size_t world, int throw_load_error)
@@ -1082,18 +1098,51 @@ static jl_value_t *jl_expand_macros(jl_value_t *expr, jl_module_t *inmodule, str
         struct macroctx_stack newctx;
         newctx.m = macroctx ? macroctx->m : inmodule;
         newctx.parent = macroctx;
-        jl_value_t *result = jl_invoke_julia_macro(e->args, inmodule, &newctx.m, world, throw_load_error);
-        jl_value_t *wrap = NULL;
-        JL_GC_PUSH3(&result, &wrap, &newctx.m);
-        // copy and wrap the result in `(hygienic-scope ,result ,newctx)
+        jl_expr_t *lno = jl_invoke_julia_macro(e->args, inmodule, &newctx.m, world, throw_load_error);
+        jl_value_t *result = jl_exprarg(lno, 1);
+        int hygienic = 0;
+        // copy and wrap the result in `(hygienic-scope ,result ,newctx) if applicable
         if (jl_is_expr(result) && ((jl_expr_t*)result)->head == jl_escape_sym)
             result = jl_exprarg(result, 0);
         else
-            wrap = (jl_value_t*)jl_exprn(jl_hygienicscope_sym, 2);
+            hygienic = 1;
+        JL_GC_PUSH3(&result, &lno, &newctx.m);
         result = jl_copy_ast(result);
         if (!onelevel)
-            result = jl_expand_macros(result, inmodule, wrap ? &newctx : macroctx, onelevel, world, throw_load_error);
-        if (wrap) {
+            result = jl_expand_macros(result, inmodule, hygienic ? &newctx : macroctx, onelevel, world, throw_load_error);
+        if (throw_load_error && jl_is_expr(result) &&
+                (((jl_expr_t*)result)->head != jl_quote_sym &&
+                 ((jl_expr_t*)result)->head != jl_inert_sym &&
+                 ((jl_expr_t*)result)->head != jl_global_sym &&
+                 ((jl_expr_t*)result)->head != jl_function_sym &&
+                 ((jl_expr_t*)result)->head != jl_const_sym &&
+                 ((jl_expr_t*)result)->head != jl_error_sym &&
+                 ((jl_expr_t*)result)->head != jl_incomplete_sym &&
+                 ((jl_expr_t*)result)->head != jl_meta_sym &&
+                 ((jl_expr_t*)result)->head != jl_generated_sym &&
+                 ((jl_expr_t*)result)->head != jl_generated_only_sym &&
+                 ((jl_expr_t*)result)->head != jl_nospecialize_sym &&
+                 ((jl_expr_t*)result)->head != jl_specialize_sym &&
+                 ((jl_expr_t*)result)->head != jl_line_sym &&
+                 ((jl_expr_t*)result)->head != jl_lineinfo_sym &&
+                 ((jl_expr_t*)result)->head != jl_coverageeffect_sym &&
+                 ((jl_expr_t*)result)->head != jl_assign_sym && // kwargs
+                 ((jl_expr_t*)result)->head != jl_parameters_sym && // kwargs
+                 ((jl_expr_t*)result)->head != jl_kw_sym && // kwargs
+                 ((jl_expr_t*)result)->head != jl_splat_sym && // kwargs
+                 ((jl_expr_t*)result)->head != jl_dot_sym)) {
+            // Record the original line number of the macro, if we think it will be safe, ensuring
+            // we preserve the original line in the stacktrace in these cases.
+            // We exclude the metadata node types (including . and =), since those do not always
+            // generate code, but just affect the scope around them, and exclude function since it
+            // could appear nested with global, which won't like that.
+            jl_exprargset(lno, 1, result);
+            if (jl_is_toplevel_only_expr(result))
+                lno->head = jl_toplevel_sym;
+            result = (jl_value_t*)lno;
+        }
+        if (hygienic) {
+            jl_value_t *wrap = (jl_value_t*)jl_exprn(jl_hygienicscope_sym, 2);
             jl_exprargset(wrap, 0, result);
             jl_exprargset(wrap, 1, newctx.m);
             result = wrap;
