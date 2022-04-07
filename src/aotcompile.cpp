@@ -256,7 +256,7 @@ static void jl_ci_cache_lookup(const jl_cgparams_t &cgparams, jl_method_instance
 // all reachable & inferrrable functions. The `policy` flag switches between the default
 // mode `0`, the extern mode `1`.
 extern "C" JL_DLLEXPORT
-void *jl_create_native_impl(jl_array_t *methods, LLVMOrcThreadSafeModuleRef llvmctxt, const jl_cgparams_t *cgparams, int _policy, int _imaging_mode)
+void *jl_create_native_impl(jl_array_t *methods, LLVMOrcThreadSafeModuleRef llvmmod, const jl_cgparams_t *cgparams, int _policy, int _imaging_mode)
 {
     if (cgparams == NULL)
         cgparams = &jl_default_cgparams;
