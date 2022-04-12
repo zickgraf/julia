@@ -180,7 +180,7 @@ static jl_callptr_t _jl_compile_codeinst(
             addr = (jl_callptr_t)getAddressForFunction(decls.functionObject);
             isspecsig = true;
         }
-        if (this_code->invoke == NULL) {
+        if (jl_atomic_load_relaxed(&this_code->invoke) == NULL) {
             // once set, don't change invoke-ptr, as that leads to race conditions
             // with the (not) simultaneous updates to invoke and specptr
             if (!decls.specFunctionObject.empty()) {
@@ -189,7 +189,7 @@ static jl_callptr_t _jl_compile_codeinst(
             }
             jl_atomic_store_release(&this_code->invoke, addr);
         }
-        else if (this_code->invoke == jl_fptr_const_return_addr && !decls.specFunctionObject.empty()) {
+        else if (jl_atomic_load_relaxed(&this_code->invoke) == jl_fptr_const_return_addr && !decls.specFunctionObject.empty()) {
             // hack to export this pointer value to jl_dump_method_disasm
             jl_atomic_store_release(&this_code->specptr.fptr, (void*)getAddressForFunction(decls.specFunctionObject));
         }
@@ -281,10 +281,8 @@ void jl_extern_c_impl(jl_value_t *declrt, jl_tupletype_t *sigt)
     // compute / validate return type
     if (!jl_is_concrete_type(declrt) || jl_is_kind(declrt))
         jl_error("@ccallable: return type must be concrete and correspond to a C type");
-    JL_LOCK(&jl_codegen_lock);
     if (!jl_type_mappable_to_c(declrt))
         jl_error("@ccallable: return type doesn't correspond to a C type");
-    JL_UNLOCK(&jl_codegen_lock);
 
     // validate method signature
     size_t i, nargs = jl_nparams(sigt);
@@ -350,7 +348,7 @@ jl_code_instance_t *jl_generate_fptr_impl(jl_method_instance_t *mi JL_PROPAGATES
                 codeinst->inferred = jl_nothing;
         }
         _jl_compile_codeinst(codeinst, src, world, *jl_ExecutionEngine->getContext());
-        if (codeinst->invoke == NULL)
+        if (jl_atomic_load_relaxed(&codeinst->invoke) == NULL)
             codeinst = NULL;
     }
     else {
@@ -374,7 +372,7 @@ void jl_generate_fptr_for_unspecialized_impl(jl_code_instance_t *unspec)
     uint8_t measure_compile_time_enabled = jl_atomic_load_relaxed(&jl_measure_compile_time_enabled);
     if (measure_compile_time_enabled)
         compiler_start_time = jl_hrtime();
-    if (unspec->invoke == NULL) {
+    if (jl_atomic_load_relaxed(&unspec->invoke) == NULL) {
         jl_code_info_t *src = NULL;
         JL_GC_PUSH1(&src);
         jl_method_t *def = unspec->def->def.method;
@@ -394,7 +392,7 @@ void jl_generate_fptr_for_unspecialized_impl(jl_code_instance_t *unspec)
         }
         assert(src && jl_is_code_info(src));
         _jl_compile_codeinst(unspec, src, unspec->min_world, *jl_ExecutionEngine->getContext());
-        if (unspec->invoke == NULL) {
+        if (jl_atomic_load_relaxed(&unspec->invoke) == NULL) {
             // if we hit a codegen bug (or ran into a broken generated function or llvmcall), fall back to the interpreter as a last resort
             jl_atomic_store_release(&unspec->invoke, jl_fptr_interpret_call_addr);
         }
@@ -488,58 +486,6 @@ static auto countBasicBlocks(const Function &F)
     return std::distance(F.begin(), F.end());
 }
 
-OptimizerResultT JuliaOJIT::OptimizerT::operator()(orc::ThreadSafeModule TSM, orc::MaterializationResponsibility &R) {
-    TSM.withModuleDo([&](Module &M) {
-        uint64_t start_time = 0;
-        if (dump_llvm_opt_stream != NULL) {
-            // Print LLVM function statistics _before_ optimization
-            // Print all the information about this invocation as a YAML object
-            jl_printf(dump_llvm_opt_stream, "- \n");
-            // We print the name and some statistics for each function in the module, both
-            // before optimization and again afterwards.
-            jl_printf(dump_llvm_opt_stream, "  before: \n");
-            for (auto &F : M.functions()) {
-                if (F.isDeclaration() || F.getName().startswith("jfptr_")) {
-                    continue;
-                }
-                // Each function is printed as a YAML object with several attributes
-                jl_printf(dump_llvm_opt_stream, "    \"%s\":\n", F.getName().str().c_str());
-                jl_printf(dump_llvm_opt_stream, "        instructions: %u\n", F.getInstructionCount());
-                jl_printf(dump_llvm_opt_stream, "        basicblocks: %lu\n", countBasicBlocks(F));
-            }
-
-            start_time = jl_hrtime();
-        }
-
-        JL_TIMING(LLVM_OPT);
-
-        {
-            //Lock around our pass manager
-            std::lock_guard<std::mutex> lock(this->mutex);
-            PM.run(M);
-        }
-
-        uint64_t end_time = 0;
-        if (dump_llvm_opt_stream != NULL) {
-            end_time = jl_hrtime();
-            jl_printf(dump_llvm_opt_stream, "  time_ns: %" PRIu64 "\n", end_time - start_time);
-            jl_printf(dump_llvm_opt_stream, "  optlevel: %d\n", optlevel);
-
-            // Print LLVM function statistics _after_ optimization
-            jl_printf(dump_llvm_opt_stream, "  after: \n");
-            for (auto &F : M.functions()) {
-                if (F.isDeclaration() || F.getName().startswith("jfptr_")) {
-                    continue;
-                }
-                jl_printf(dump_llvm_opt_stream, "    \"%s\":\n", F.getName().str().c_str());
-                jl_printf(dump_llvm_opt_stream, "        instructions: %u\n", F.getInstructionCount());
-                jl_printf(dump_llvm_opt_stream, "        basicblocks: %lu\n", countBasicBlocks(F));
-            }
-        }
-    });
-    return Expected<orc::ThreadSafeModule>{std::move(TSM)};
-}
-
 void JuliaOJIT::OptSelLayerT::emit(std::unique_ptr<orc::MaterializationResponsibility> R, orc::ThreadSafeModule TSM) {
     size_t optlevel = ~0ull;
     TSM.withModuleDo([&](Module &M) {
@@ -564,7 +510,7 @@ void JuliaOJIT::OptSelLayerT::emit(std::unique_ptr<orc::MaterializationResponsib
         }
     });
     assert(optlevel != ~0ull && "Failed to select a valid optimization level!");
-    this->optimizers[optlevel].emit(std::move(R), std::move(TSM));
+    this->optimizers[optlevel]->OptimizeLayer.emit(std::move(R), std::move(TSM));
 }
 
 void jl_register_jit_object(const object::ObjectFile &debugObj,
@@ -905,6 +851,106 @@ namespace {
         .setCodeModel(TM.getCodeModel())
         .setCodeGenOptLevel(CodeGenOptLevelFor(optlevel));
     }
+
+    struct TMCreator {
+        orc::JITTargetMachineBuilder JTMB;
+
+        TMCreator(TargetMachine &TM, int optlevel) : JTMB(createJTMBFromTM(TM, optlevel)) {}
+
+        std::unique_ptr<TargetMachine> operator()() {
+            return cantFail(JTMB.createTargetMachine());
+        }
+    };
+
+    struct PMCreator {
+        std::unique_ptr<TargetMachine> TM;
+        int optlevel;
+        PMCreator(TargetMachine &TM, int optlevel) : TM(cantFail(createJTMBFromTM(TM, optlevel).createTargetMachine())), optlevel(optlevel) {}
+        PMCreator(const PMCreator &other) : PMCreator(*other.TM, other.optlevel) {}
+        PMCreator(PMCreator &&other) : TM(std::move(other.TM)), optlevel(other.optlevel) {}
+        friend void swap(PMCreator &self, PMCreator &other) {
+            using std::swap;
+            swap(self.TM, other.TM);
+            swap(self.optlevel, other.optlevel);
+        }
+        PMCreator &operator=(PMCreator other) {
+            swap(*this, other);
+            return *this;
+        }
+        std::unique_ptr<legacy::PassManager> operator()() {
+            auto PM = std::make_unique<legacy::PassManager>();
+            addPassesForOptLevel(*PM, *TM, optlevel);
+            return PM;
+        }
+    };
+
+    struct OptimizerT {
+        OptimizerT(TargetMachine &TM, int optlevel) : optlevel(optlevel), PMs(PMCreator(TM, optlevel)) {}
+
+        OptimizerResultT operator()(orc::ThreadSafeModule TSM, orc::MaterializationResponsibility &R) {
+            TSM.withModuleDo([&](Module &M) {
+                uint64_t start_time = 0;
+                if (dump_llvm_opt_stream != NULL) {
+                    // Print LLVM function statistics _before_ optimization
+                    // Print all the information about this invocation as a YAML object
+                    jl_printf(dump_llvm_opt_stream, "- \n");
+                    // We print the name and some statistics for each function in the module, both
+                    // before optimization and again afterwards.
+                    jl_printf(dump_llvm_opt_stream, "  before: \n");
+                    for (auto &F : M.functions()) {
+                        if (F.isDeclaration() || F.getName().startswith("jfptr_")) {
+                            continue;
+                        }
+                        // Each function is printed as a YAML object with several attributes
+                        jl_printf(dump_llvm_opt_stream, "    \"%s\":\n", F.getName().str().c_str());
+                        jl_printf(dump_llvm_opt_stream, "        instructions: %u\n", F.getInstructionCount());
+                        jl_printf(dump_llvm_opt_stream, "        basicblocks: %lu\n", countBasicBlocks(F));
+                    }
+
+                    start_time = jl_hrtime();
+                }
+
+                JL_TIMING(LLVM_OPT);
+
+                //Run the optimization
+                (***PMs).run(M);
+
+                uint64_t end_time = 0;
+                if (dump_llvm_opt_stream != NULL) {
+                    end_time = jl_hrtime();
+                    jl_printf(dump_llvm_opt_stream, "  time_ns: %" PRIu64 "\n", end_time - start_time);
+                    jl_printf(dump_llvm_opt_stream, "  optlevel: %d\n", optlevel);
+
+                    // Print LLVM function statistics _after_ optimization
+                    jl_printf(dump_llvm_opt_stream, "  after: \n");
+                    for (auto &F : M.functions()) {
+                        if (F.isDeclaration() || F.getName().startswith("jfptr_")) {
+                            continue;
+                        }
+                        jl_printf(dump_llvm_opt_stream, "    \"%s\":\n", F.getName().str().c_str());
+                        jl_printf(dump_llvm_opt_stream, "        instructions: %u\n", F.getInstructionCount());
+                        jl_printf(dump_llvm_opt_stream, "        basicblocks: %lu\n", countBasicBlocks(F));
+                    }
+                }
+            });
+            return Expected<orc::ThreadSafeModule>{std::move(TSM)};
+        }
+    private:
+        int optlevel;
+        JuliaOJIT::ResourcePool<std::unique_ptr<legacy::PassManager>> PMs;
+    };
+
+    struct CompilerT : orc::IRCompileLayer::IRCompiler {
+
+        CompilerT(orc::IRSymbolMapper::ManglingOptions MO, TargetMachine &TM, int optlevel)
+        : orc::IRCompileLayer::IRCompiler(MO), TMs(TMCreator(TM, optlevel)) {}
+
+        Expected<std::unique_ptr<MemoryBuffer>> operator()(Module &M) override {
+            return orc::SimpleCompiler(***TMs)(M);
+        }
+
+        JuliaOJIT::ResourcePool<std::unique_ptr<TargetMachine>> TMs;
+    };
 }
 
 llvm::DataLayout jl_create_datalayout(TargetMachine &TM) {
@@ -914,15 +960,14 @@ llvm::DataLayout jl_create_datalayout(TargetMachine &TM) {
     return jl_data_layout;
 }
 
+JuliaOJIT::PipelineT::PipelineT(orc::ObjectLayer &BaseLayer, TargetMachine &TM, int optlevel)
+: CompileLayer(BaseLayer.getExecutionSession(), BaseLayer,
+    std::make_unique<CompilerT>(orc::irManglingOptionsFromTargetOptions(TM.Options), TM, optlevel)),
+  OptimizeLayer(CompileLayer.getExecutionSession(), CompileLayer, OptimizerT(TM, optlevel)) {}
+
 JuliaOJIT::JuliaOJIT()
   : TM(createTargetMachine()),
     DL(jl_create_datalayout(*TM)),
-    TMs{
-        cantFail(createJTMBFromTM(*TM, 0).createTargetMachine()),
-        cantFail(createJTMBFromTM(*TM, 1).createTargetMachine()),
-        cantFail(createJTMBFromTM(*TM, 2).createTargetMachine()),
-        cantFail(createJTMBFromTM(*TM, 3).createTargetMachine())
-    },
 #if JL_LLVM_VERSION >= 130000
     ES(cantFail(orc::SelfExecutorProcessControl::Create())),
 #else
@@ -949,17 +994,13 @@ JuliaOJIT::JuliaOJIT()
             }
         ),
 #endif
-    CompileLayer0(ES, ObjectLayer, std::make_unique<orc::ConcurrentIRCompiler>(createJTMBFromTM(*TM, 0))),
-    CompileLayer1(ES, ObjectLayer, std::make_unique<orc::ConcurrentIRCompiler>(createJTMBFromTM(*TM, 1))),
-    CompileLayer2(ES, ObjectLayer, std::make_unique<orc::ConcurrentIRCompiler>(createJTMBFromTM(*TM, 2))),
-    CompileLayer3(ES, ObjectLayer, std::make_unique<orc::ConcurrentIRCompiler>(createJTMBFromTM(*TM, 3))),
-    OptimizeLayers{
-        {ES, CompileLayer0, OptimizerT(PM0, PM_mutexes[0], 0)},
-        {ES, CompileLayer1, OptimizerT(PM1, PM_mutexes[1], 1)},
-        {ES, CompileLayer2, OptimizerT(PM2, PM_mutexes[2], 2)},
-        {ES, CompileLayer3, OptimizerT(PM3, PM_mutexes[3], 3)},
+    Pipelines{
+        std::make_unique<PipelineT>(ObjectLayer, *TM, 0),
+        std::make_unique<PipelineT>(ObjectLayer, *TM, 1),
+        std::make_unique<PipelineT>(ObjectLayer, *TM, 2),
+        std::make_unique<PipelineT>(ObjectLayer, *TM, 3),
     },
-    OptSelLayer(OptimizeLayers)
+    OptSelLayer(Pipelines)
 {
 #ifdef JL_USE_JITLINK
 # if defined(_OS_DARWIN_) && defined(LLVM_SHLIB)
@@ -981,10 +1022,6 @@ JuliaOJIT::JuliaOJIT()
             registerRTDyldJITObject(Object, LO, MemMgr);
         });
 #endif
-    addPassesForOptLevel(PM0, *TMs[0], 0);
-    addPassesForOptLevel(PM1, *TMs[1], 1);
-    addPassesForOptLevel(PM2, *TMs[2], 2);
-    addPassesForOptLevel(PM3, *TMs[3], 3);
 
     // Make sure SectionMemoryManager::getSymbolAddressInProcess can resolve
     // symbols in the program as well. The nullptr argument to the function
