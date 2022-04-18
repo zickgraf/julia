@@ -1361,7 +1361,7 @@ function link_jilib(path, out, args=``)
     LIBDIR = joinpath(Sys.BINDIR, "..", "lib")
     LIBS = is_debug() ? `-ljulia-debug -ljulia-internal-debug` : `-ljulia -ljulia-internal`
     ld() do ld
-        run(`$ld --shared --output=$out --whole-archive $path --no-whole-archive -L$(LIBDIR) $LIBS $args`)
+        run(`$ld --shared --output=$out --whole-archive $path --no-whole-archive -L$(LIBDIR) $LIBS $args`, stdin, stdout, stderr)
     end
 end
 
