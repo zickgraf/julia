@@ -562,6 +562,7 @@
              ,(if (any kwarg? pargl) (gensy) UNUSED)
              (call (core kwftype) ,ftype)) ,kw ,@pargl ,@vararg)
           `(block
+            ,@(filter inline-meta? prologue)
             ,@(filter linenum? prologue)
             ;; nospecialize meta for just positional args
             ,@(map (lambda (m)
