@@ -14,7 +14,6 @@
 
 #include "llvm-version.h"
 
-#define DEBUG_TYPE "demote_float16"
 
 #include "support/dtypes.h"
 #include "passes.h"
@@ -27,6 +26,8 @@
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Verifier.h>
 #include <llvm/Support/Debug.h>
+
+#define DEBUG_TYPE "demote_float16"
 
 using namespace llvm;
 
