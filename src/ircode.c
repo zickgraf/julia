@@ -328,7 +328,8 @@ static void jl_encode_value_(jl_ircode_state *s, jl_value_t *v, int as_literal) 
     else {
         if (!as_literal && !(jl_is_uniontype(v) || jl_is_newvarnode(v) || jl_is_tuple(v) ||
                              jl_is_linenode(v) || jl_is_upsilonnode(v) || jl_is_pinode(v) ||
-                             jl_is_slot(v) || jl_is_ssavalue(v))) {
+                             jl_is_slot(v) || jl_is_ssavalue(v) || jl_is_quotenode(v) ||
+                             (jl_isbits(jl_typeof(v)) && jl_datatype_size(jl_typeof(v)) <= 256))) {
             literal_val_id(&rr, s, v);
             int id = rr.index;
             assert(id >= 0);

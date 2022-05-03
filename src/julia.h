@@ -1269,7 +1269,7 @@ STATIC_INLINE int jl_is_structtype(void *v) JL_NOTSAFEPOINT
             !jl_is_primitivetype(v));
 }
 
-STATIC_INLINE int jl_isbits(void *t) JL_NOTSAFEPOINT // corresponding to isbits() in julia
+STATIC_INLINE int jl_isbits(void *t) JL_NOTSAFEPOINT // corresponding to isbitstype() in julia
 {
     return (jl_is_datatype(t) && ((jl_datatype_t*)t)->isbitstype);
 }
