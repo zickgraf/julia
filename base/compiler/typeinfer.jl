@@ -568,7 +568,7 @@ end
 function annotate_slot_load!(e::Expr, vtypes::VarTable, sv::InferenceState, undefs::Array{Bool,1})
     head = e.head
     i0 = 1
-    if is_meta_expr_head(head) || head === :const
+    if is_meta_expr_head(head) || head === :const || head === :isdefined
         return
     end
     if head === :(=) || head === :method
