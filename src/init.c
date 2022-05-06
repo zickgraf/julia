@@ -753,6 +753,8 @@ static NOINLINE void _finish_julia_init(JL_IMAGE_SEARCH rel, jl_ptls_t ptls, jl_
         JL_GC_POP();
     }
 
+    jl_gc_init_finalizer_rng_state();
+
     if (jl_options.handle_signals == JL_OPTIONS_HANDLE_SIGNALS_ON)
         jl_install_sigint_handler();
 }
