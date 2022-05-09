@@ -57,7 +57,7 @@ Library changes
 * `Dict` can be now shrunk manually by `sizehint!` ([#45004]).
 * `@time` now separates out % time spent recompiling invalidated methods ([#45015]).
 * `@time_imports` now shows any compilation and recompilation time percentages per import ([#45064]).
-* `printstyled` now support italic output ([#?]).
+* `printstyled` now supports italic output ([#45164]).
 
 Standard library changes
 ------------------------
