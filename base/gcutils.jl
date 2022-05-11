@@ -4,6 +4,12 @@
 ==(w::WeakRef, v) = isequal(w.value, v)
 ==(w, v::WeakRef) = isequal(w, v.value)
 
+function _check_mutable(@nospecialize(o)) @noinline
+    if !ismutable(o)
+        error("objects of type ", typeof(o), " cannot be finalized")
+    end
+end
+
 """
     finalizer(f, x)
 
@@ -42,18 +48,13 @@ end
 ```
 """
 function finalizer(@nospecialize(f), @nospecialize(o))
-    if !ismutable(o)
-        error("objects of type ", typeof(o), " cannot be finalized")
-    end
-    ccall(:jl_gc_add_finalizer_th, Cvoid, (Ptr{Cvoid}, Any, Any),
-          Core.getptls(), o, f)
+    _check_mutable(o)
+    Core._add_finalizer(o, f)
     return o
 end
 
 function finalizer(f::Ptr{Cvoid}, o::T) where T @inline
-    if !ismutable(o)
-        error("objects of type ", typeof(o), " cannot be finalized")
-    end
+    _check_mutable(o)
     ccall(:jl_gc_add_ptr_finalizer, Cvoid, (Ptr{Cvoid}, Any, Ptr{Cvoid}),
           Core.getptls(), o, f)
     return o

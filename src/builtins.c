@@ -1591,6 +1591,14 @@ JL_CALLABLE(jl_f_donotdelete)
     return jl_nothing;
 }
 
+JL_CALLABLE(jl_f__add_finalizer)
+{
+    JL_NARGS(_add_finalizer, 2, 4);
+    jl_task_t *ct = jl_current_task;
+    jl_gc_add_finalizer_(ct->ptls, args[0], args[1]);
+    return jl_nothing;
+}
+
 static int equiv_field_types(jl_value_t *old, jl_value_t *ft)
 {
     size_t nf = jl_svec_len(ft);
@@ -1961,6 +1969,7 @@ void jl_init_primitives(void) JL_GC_DISABLED
     jl_builtin__typebody = add_builtin_func("_typebody!", jl_f__typebody);
     add_builtin_func("_equiv_typedef", jl_f__equiv_typedef);
     jl_builtin_donotdelete = add_builtin_func("donotdelete", jl_f_donotdelete);
+    add_builtin_func("_add_finalizer", jl_f__add_finalizer);
 
     // builtin types
     add_builtin("Any", (jl_value_t*)jl_any_type);

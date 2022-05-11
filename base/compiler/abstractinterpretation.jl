@@ -1589,6 +1589,16 @@ function invoke_rewrite(xs::Vector{Any})
     return newxs
 end
 
+function abstract_add_finalizer(interp::AbstractInterpreter, argtypes::Vector{Any}, sv::InferenceState)
+    if length(argtypes) == 3
+        tt = argtypes[3]
+        finalizer_argvec = Any[argtypes[3], argtypes[2]]
+        call = abstract_call(interp, ArgInfo(nothing, finalizer_argvec), sv, 1)
+        return CallMeta(Nothing, Effects(), FinalizerInfo(call.info, call.effects))
+    end
+    return CallMeta(Nothing, Effects(), false)
+end
+
 # call where the function is known exactly
 function abstract_call_known(interp::AbstractInterpreter, @nospecialize(f),
         arginfo::ArgInfo, sv::InferenceState,
@@ -1603,6 +1613,8 @@ function abstract_call_known(interp::AbstractInterpreter, @nospecialize(f),
             return abstract_invoke(interp, arginfo, sv)
         elseif f === modifyfield!
             return abstract_modifyfield!(interp, argtypes, sv)
+        elseif f === Core._add_finalizer
+            return abstract_add_finalizer(interp, argtypes, sv)
         end
         rt = abstract_call_builtin(interp, f, arginfo, sv, max_methods)
         return CallMeta(rt, builtin_effects(f, argtypes, rt), false)
@@ -1998,7 +2010,8 @@ function abstract_eval_statement(interp::AbstractInterpreter, @nospecialize(e), 
                 effects.effect_free ? ALWAYS_TRUE : TRISTATE_UNKNOWN,
                 effects.nothrow ? ALWAYS_TRUE : TRISTATE_UNKNOWN,
                 effects.terminates_globally ? ALWAYS_TRUE : TRISTATE_UNKNOWN,
-                #=nonoverlayed=#true
+                #=nonoverlayed=#true,
+                TRISTATE_UNKNOWN
             ))
         else
             tristate_merge!(sv, EFFECTS_UNKNOWN)
@@ -2087,6 +2100,19 @@ function abstract_eval_global(M::Module, s::Symbol, frame::InferenceState)
             nothrow=TRISTATE_UNKNOWN))
     end
     return ty
+end
+
+function abstract_eval_global_assignment(interp::AbstractInterpreter, frame::InferenceState, lhs::GlobalRef, @nospecialize(rhs))
+    M = lhs.mod
+    s = lhs.name
+    nothrow = false
+    if isdefined(M, s) && !isconst(M, s)
+        ty = ccall(:jl_binding_type, Any, (Any, Any), M, s)
+        nothrow = ty === nothing || rhs ⊑ ty
+    end
+    tristate_merge!(frame, Effects(EFFECTS_TOTAL,
+        effect_free=TRISTATE_UNKNOWN,
+        nothrow=nothrow ? ALWAYS_TRUE : TRISTATE_UNKNOWN))
 end
 
 abstract_eval_ssavalue(s::SSAValue, sv::InferenceState) = abstract_eval_ssavalue(s, sv.src)
@@ -2321,9 +2347,7 @@ function typeinf_local(interp::AbstractInterpreter, frame::InferenceState)
                 if isa(lhs, SlotNumber)
                     changes = StateUpdate(lhs, VarState(t, false), changes, false)
                 elseif isa(lhs, GlobalRef)
-                    tristate_merge!(frame, Effects(EFFECTS_TOTAL,
-                        effect_free=TRISTATE_UNKNOWN,
-                        nothrow=TRISTATE_UNKNOWN))
+                    abstract_eval_global_assignment(interp, frame, lhs, t)
                 elseif !isa(lhs, SSAValue)
                     tristate_merge!(frame, EFFECTS_UNKNOWN)
                 end

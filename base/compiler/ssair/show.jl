@@ -802,6 +802,8 @@ function Base.show(io::IO, e::Core.Compiler.Effects)
     printstyled(io, string(tristate_letter(e.nothrow), 'n'); color=tristate_color(e.nothrow))
     print(io, ',')
     printstyled(io, string(tristate_letter(e.terminates), 't'); color=tristate_color(e.terminates))
+    print(io, ',')
+    printstyled(io, string(tristate_letter(e.notls), 's'); color=tristate_color(e.notls))
     print(io, ')')
     e.nonoverlayed || printstyled(io, '′'; color=:red)
 end
