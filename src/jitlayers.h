@@ -8,6 +8,9 @@
 #include <llvm/IR/Value.h>
 #include <llvm/IR/PassManager.h>
 #include <llvm/IR/LegacyPassManager.h>
+#include <llvm/Passes/PassBuilder.h>
+#include <llvm/Passes/PassPlugin.h>
+#include <llvm/Passes/StandardInstrumentations.h>
 
 #include <llvm/ExecutionEngine/Orc/IRCompileLayer.h>
 #include <llvm/ExecutionEngine/Orc/IRTransformLayer.h>
@@ -64,6 +67,30 @@ void jl_finalize_module(orc::ThreadSafeModule  m);
 void jl_merge_module(orc::ThreadSafeModule &dest, orc::ThreadSafeModule src);
 GlobalVariable *jl_emit_RTLD_DEFAULT_var(Module *M);
 DataLayout jl_create_datalayout(TargetMachine &TM);
+
+struct NewPM {
+    std::unique_ptr<TargetMachine> TM;
+    //Register things like printing, timing, etc
+    StandardInstrumentations SI;
+    //Hold the standard instrumentations
+    std::unique_ptr<PassInstrumentationCallbacks> PIC;
+    struct AnalysisManagers {
+        LoopAnalysisManager LAM;
+        FunctionAnalysisManager FAM;
+        CGSCCAnalysisManager CGAM;
+        ModuleAnalysisManager MAM;
+    } analyses;
+    PassBuilder PB;
+    ModulePassManager MPM;
+
+    NewPM(std::unique_ptr<TargetMachine> TM, int opt_level,
+        //Optional pass configuration options
+        bool lower_intrinsics=true, bool dump_native=false, bool external_use=false);
+
+    void run(Module &M) {
+        MPM.run(M, analyses.MAM);
+    }
+};
 
 static inline bool imaging_default() {
     return jl_options.image_codegen || (jl_generating_output() && !jl_options.incremental);
