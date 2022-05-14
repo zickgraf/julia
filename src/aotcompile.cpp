@@ -531,9 +531,16 @@ void jl_dump_native_impl(void *native_code,
             CodeGenOpt::Aggressive // -O3 TODO: respect command -O0 flag?
             ));
 
-    // legacy::PassManager PM;
-    // addTargetPasses(&PM, TM->getTargetTriple(), TM->getTargetIRAnalysis());
+#ifdef USE_NEW_PM
     NewPM PM(*TM, jl_options.opt_level, true, true);
+#else
+    legacy::PassManager PM;
+    addTargetPasses(&PM, TM->getTargetTriple(), TM->getTargetIRAnalysis());
+    if (bc_fname || obj_fname || asm_fname) {
+        addOptimizationPasses(&PM, jl_options.opt_level, true, true);
+        addMachinePasses(&PM, jl_options.opt_level);
+    }
+#endif
 
     // set up optimization passes
     SmallVector<char, 0> bc_Buffer;
@@ -1491,6 +1498,7 @@ void *jl_get_llvmf_defn_impl(jl_method_instance_t *mi, size_t world, char getwra
         return NULL;
     }
 
+#ifndef USE_NEW_PM
     static legacy::PassManager *PM;
     if (!PM) {
         PM = new legacy::PassManager();
@@ -1498,6 +1506,8 @@ void *jl_get_llvmf_defn_impl(jl_method_instance_t *mi, size_t world, char getwra
         addOptimizationPasses(PM, jl_options.opt_level);
         addMachinePasses(PM, jl_options.opt_level);
     }
+#endif
+
 
     // get the source code for this function
     jl_value_t *jlrettype = (jl_value_t*)jl_any_type;
@@ -1551,9 +1561,15 @@ void *jl_get_llvmf_defn_impl(jl_method_instance_t *mi, size_t world, char getwra
             // and will better match what's actually in sysimg.
             for (auto &global : output.globals)
                 global.second->setLinkage(GlobalValue::ExternalLinkage);
-            if (optimize)
+            if (optimize) {
+#ifdef USE_NEW_PM
+                auto TM = jl_ExecutionEngine->cloneTargetMachine();
+                NewPM NPM(*TM, jl_options.opt_level);
+                auto PM = &NPM;
+#endif
                 //Safe b/c context lock is held by output
                 PM->run(*m.getModuleUnlocked());
+            }
             const std::string *fname;
             if (decls.functionObject == "jl_fptr_args" || decls.functionObject == "jl_fptr_sparam")
                 getwrapper = false;

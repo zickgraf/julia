@@ -91,6 +91,8 @@ struct NewPM {
     }
 };
 
+#define USE_NEW_PM
+
 static inline bool imaging_default() {
     return jl_options.image_codegen || (jl_generating_output() && !jl_options.incremental);
 }

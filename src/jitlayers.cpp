@@ -884,6 +884,12 @@ namespace {
         }
     };
 
+#ifdef USE_NEW_PM
+    typedef NewPM PassManager;
+#else
+    typedef legacy::PassManager PassManager;
+#endif
+
     struct PMCreator {
         std::unique_ptr<TargetMachine> TM;
         int optlevel;
@@ -899,12 +905,16 @@ namespace {
             swap(*this, other);
             return *this;
         }
-        std::unique_ptr<legacy::PassManager> operator()() {
+        std::unique_ptr<PassManager> operator()() {
+#ifdef USE_NEW_PM
+            return std::make_unique<NewPM>(*TM, optlevel);
+#else
             auto PM = std::make_unique<legacy::PassManager>();
             addTargetPasses(PM.get(), TM->getTargetTriple(), TM->getTargetIRAnalysis());
             addOptimizationPasses(PM.get(), optlevel);
             addMachinePasses(PM.get(), optlevel);
             return PM;
+#endif
         }
     };
 
@@ -967,7 +977,7 @@ namespace {
         }
     private:
         int optlevel;
-        JuliaOJIT::ResourcePool<std::unique_ptr<legacy::PassManager>> PMs;
+        JuliaOJIT::ResourcePool<std::unique_ptr<PassManager>> PMs;
     };
 
     struct CompilerT : orc::IRCompileLayer::IRCompiler {
