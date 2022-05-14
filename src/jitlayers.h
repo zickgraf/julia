@@ -69,7 +69,6 @@ GlobalVariable *jl_emit_RTLD_DEFAULT_var(Module *M);
 DataLayout jl_create_datalayout(TargetMachine &TM);
 
 struct NewPM {
-    std::unique_ptr<TargetMachine> TM;
     //Register things like printing, timing, etc
     StandardInstrumentations SI;
     //Hold the standard instrumentations
@@ -83,7 +82,7 @@ struct NewPM {
     PassBuilder PB;
     ModulePassManager MPM;
 
-    NewPM(std::unique_ptr<TargetMachine> TM, int opt_level,
+    NewPM(TargetMachine &TM, int opt_level,
         //Optional pass configuration options
         bool lower_intrinsics=true, bool dump_native=false, bool external_use=false);
 

@@ -531,8 +531,9 @@ void jl_dump_native_impl(void *native_code,
             CodeGenOpt::Aggressive // -O3 TODO: respect command -O0 flag?
             ));
 
-    legacy::PassManager PM;
-    addTargetPasses(&PM, TM->getTargetTriple(), TM->getTargetIRAnalysis());
+    // legacy::PassManager PM;
+    // addTargetPasses(&PM, TM->getTargetTriple(), TM->getTargetIRAnalysis());
+    NewPM PM(*TM, jl_options.opt_level, true, true);
 
     // set up optimization passes
     SmallVector<char, 0> bc_Buffer;
@@ -549,19 +550,17 @@ void jl_dump_native_impl(void *native_code,
     std::vector<NewArchiveMember> unopt_bc_Archive;
     std::vector<std::string> outputs;
 
-    if (unopt_bc_fname)
-        PM.add(createBitcodeWriterPass(unopt_bc_OS));
-    if (bc_fname || obj_fname || asm_fname) {
-        addOptimizationPasses(&PM, jl_options.opt_level, true, true);
-        addMachinePasses(&PM, jl_options.opt_level);
+    legacy::PassManager preopt, postopt;
+    if (unopt_bc_fname) {
+        preopt.add(createBitcodeWriterPass(unopt_bc_OS));
     }
     if (bc_fname)
-        PM.add(createBitcodeWriterPass(bc_OS));
+        postopt.add(createBitcodeWriterPass(bc_OS));
     if (obj_fname)
-        if (TM->addPassesToEmitFile(PM, obj_OS, nullptr, CGFT_ObjectFile, false))
+        if (TM->addPassesToEmitFile(postopt, obj_OS, nullptr, CGFT_ObjectFile, false))
             jl_safe_printf("ERROR: target does not support generation of object files\n");
     if (asm_fname)
-        if (TM->addPassesToEmitFile(PM, asm_OS, nullptr, CGFT_AssemblyFile, false))
+        if (TM->addPassesToEmitFile(postopt, asm_OS, nullptr, CGFT_AssemblyFile, false))
             jl_safe_printf("ERROR: target does not support generation of object files\n");
 
     // Reset the target triple to make sure it matches the new target machine
@@ -593,7 +592,9 @@ void jl_dump_native_impl(void *native_code,
 
     // do the actual work
     auto add_output = [&] (Module &M, StringRef unopt_bc_Name, StringRef bc_Name, StringRef obj_Name, StringRef asm_Name) {
-        PM.run(M);
+        preopt.run(M); // Write to file prior to optimization
+        PM.run(M); // Run optimization
+        postopt.run(M); // Write optimized results to files
         if (unopt_bc_fname)
             emit_result(unopt_bc_Archive, unopt_bc_Buffer, unopt_bc_Name, outputs);
         if (bc_fname)
@@ -1372,17 +1373,17 @@ PIC->addClassToPassName(decltype(CREATE_PASS)::name(), NAME);
 // or adapting PassBuilder (or subclassing it) to suite our needs. This is in particular important for
 // BPF, NVPTX, and AMDGPU.
 
-NewPM::NewPM(std::unique_ptr<TargetMachine> TM, int opt_level,
+NewPM::NewPM(TargetMachine &TM, int opt_level,
         //Optional pass configuration options
         bool lower_intrinsics, bool dump_native, bool external_use) :
             SI(false), PIC(createPIC(SI)),
             analyses{
                 {}, // LAM
-                createFAM(opt_level, TM->getTargetIRAnalysis(), TM->getTargetTriple()), // FAM
+                createFAM(opt_level, TM.getTargetIRAnalysis(), TM.getTargetTriple()), // FAM
                 {}, // CGAM
                 {} // MAM
             },
-            PB(createPB(*TM, *PIC, analyses)),
+            PB(createPB(TM, *PIC, analyses)),
             MPM(createMPM(opt_level, lower_intrinsics, dump_native, external_use)) {}
 
 // new pass manager plugin
