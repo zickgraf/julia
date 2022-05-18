@@ -950,7 +950,12 @@ namespace {
                 JL_TIMING(LLVM_OPT);
 
                 //Run the optimization
+#ifdef USE_NEW_PM
+                //TODO find out why we can't return the unique ptr to the pool
+                (*PMs.acquire()).run(M);
+#else
                 (***PMs).run(M);
+#endif
 
                 uint64_t end_time = 0;
                 {

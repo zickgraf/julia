@@ -1301,7 +1301,6 @@ void addPipeline(ModulePassManager &MPM, int opt_level, bool lower_intrinsics, b
 namespace {
     auto createPIC(StandardInstrumentations &SI) {
         auto PIC = std::make_unique<PassInstrumentationCallbacks>();
-        SI.registerCallbacks(*PIC);
 //Borrowed from LLVM PassBuilder.cpp:386
 #define MODULE_PASS(NAME, CREATE_PASS)                                         \
 PIC->addClassToPassName(decltype(CREATE_PASS)::name(), NAME);
@@ -1333,24 +1332,27 @@ PIC->addClassToPassName(decltype(CREATE_PASS)::name(), NAME);
 
 #include "llvm-julia-passes.inc"
 
+        SI.registerCallbacks(*PIC);
         return PIC;
     }
 
     FunctionAnalysisManager createFAM(int opt_level, TargetIRAnalysis analysis, const Triple &triple) {
-        AAManager AA;
-        // TODO: Why are we only doing this for -O3?
-        if (opt_level >= 3) {
-            AA.registerFunctionAnalysis<BasicAA>();
-        }
-        if (opt_level >= 2) {
-            AA.registerFunctionAnalysis<ScopedNoAliasAA>();
-            AA.registerFunctionAnalysis<TypeBasedAA>();
-        }
-        // TM->registerDefaultAliasAnalyses(AA);
 
         FunctionAnalysisManager FAM;
         // Register the AA manager first so that our version is the one used.
-        FAM.registerPass([&] { return std::move(AA); });
+        FAM.registerPass([&] {
+            AAManager AA;
+            // TODO: Why are we only doing this for -O3?
+            if (opt_level >= 3) {
+                AA.registerFunctionAnalysis<BasicAA>();
+            }
+            if (opt_level >= 2) {
+                AA.registerFunctionAnalysis<ScopedNoAliasAA>();
+                AA.registerFunctionAnalysis<TypeBasedAA>();
+            }
+            // TM->registerDefaultAliasAnalyses(AA);
+            return AA;
+        });
         // Register our TargetLibraryInfoImpl.
         FAM.registerPass([&] { return llvm::TargetIRAnalysis(analysis); });
         FAM.registerPass([&] { return llvm::TargetLibraryAnalysis(llvm::TargetLibraryInfoImpl(triple)); });
